@@ -1,0 +1,7 @@
+"0","    QDXinsPlanCode <- QDXinsPlansCode %>%
+                      group_by(insAltId) %>%
+                      slice(1)
+"
+"2","Error in grouped_df_impl(data, unname(vars), drop) : 
+  Column `insAltId` is unknown
+"

@@ -1,0 +1,511 @@
+---
+title: "OLI_Claim2Rev"
+output: html_notebook
+---
+
+Insert the purpose of this script
+
+```{r Setup}
+refresh = 1
+
+## for Claim Ticket, amounts are reported per OLIID + Ticket Number
+grp_var <- c('OLIID')
+```
+
+** Read Revenue Data from GHI **
+### Get the Test revenue from EDWDB.fctRevenue table
+
+```{r Read GHI Revenue Data}
+
+Revenue <- getGHIRevenue('Claim2Rev', DB_source_data, refresh)
+#('ClaimTicket', DB_source_data, refresh)
+
+    # exploration
+    a <- c(grep("^(?i)([^(OL)])",Revenue$OLIID), grep('^OL([^0-9])',Revenue$OLIID))
+    sprintf("%d rows have null Order Line Item Id", sum(is.na(Revenue$OLIID)))
+    sprintf("and %d rows have unconventional Order Line Item Id i.e. OLnnn format", length(a))
+
+    a <- grep('^9+', Revenue$TicketNumber)    
+    sprintf("%d rows have null Ticket Number", sum(is.na(Revenue$TicketNumber)))
+    sprintf("however, %d rows have (-1) or (999999) Ticket Number", sum(sum(Revenue$TicketNumber=='-1'),length(a)))
+    
+Revenue[(which(is.na(Revenue$OLIID))),'OLIID'] <- "Unknown"
+
+```
+
+** get Test claim data **
+Get the Test Claim data from Quadax stdClaim.txt. Quadax provides the inforamtion in a zip file to the FTP server every night.
+The data is loaded every night into ODSProd01.
+The sql select claim of date of service since 2015-10-01
+
+```{r Read QDX Claim, Payment & Case Data}
+Claim <- getQDXClaim('ClaimTicket', DB_source_data, refresh)
+Pymnt <- getQDXPayment('ClaimTicket', DB_source_data, refresh)
+Cases <- getQDXCases('QDXClaim_CaseStatus', DB_source_data, refresh)
+
+```
+
+** Cleaning the data **
+1. drop the scenario either need checking, and not working for the OLI grain
+   a. Claim without OLI reference
+   b. Payment without OLI reference
+   This script is to generate a dataset/report to track OLI bill amount, receipt and revenue. Transactions without OLI reference will not be picked up in the merging and joining.
+   
+2. Remove the top side adjustment from Revenue file.
+   Finance are making some of the top side adjustment to actual OLIs, OLIs that fall into the same payor/country.
+   A flag is utilized in 2016 to call out revenue rows of Revenue adjustment.
+   New process was introduced in 2017, since then the revenue adjustment rows are not flagged.
+   
+Open: how to make use of the QDX Ticket transaction without reference to an OLI?
+      how to make use of the GHI Revenue transaction that are reference to a 'fake' OLI?
+
+```{r Clean data}
+
+#Claim_wo_OLI <- Claim[(is.na(Claim$OLIID) | Claim$OLIID=='NONE'),]
+Claim_wo_OLI <- nrow(Claim[(is.na(Claim$OLIID) | Claim$OLIID=='NONE'),])
+print(paste (Claim_wo_OLI, " claim tickets have no OLI reference.", sep=""))
+Claim <- Claim[(!((is.na(Claim$OLIID)) | (Claim$OLIID=='NONE'))),]
+
+#Pymnt_wo_OLI <- Pymnt[(is.na(Pymnt$OLIID) | Pymnt$OLIID=='NONE'),]
+Pymnt_wo_OLI <- nrow(Pymnt[(is.na(Pymnt$OLIID) | Pymnt$OLIID=='NONE'),])
+print(paste (Pymnt_wo_OLI, " Payment ticket transactions have no OLI reference.", sep=""))
+Pymnt <- Pymnt[(!((is.na(Pymnt$OLIID)) | (Pymnt$OLIID=='NONE'))),]
+
+Revenue <- Revenue %>%
+           dplyr::filter(Revenue$IsRevenueReconciliationAdjustment == 0)
+```
+
+** Read Order Line Detail data **
+for OLI Claim2Rev, use the OLI Payor information from OLIDetail
+for ClaimTicket2Rev, get the Ticket information from Revenue file. If the ticket payor information is not available, then patch it with the OLI Payor information.
+
+```{r Read GHI Order Line Detail Data}
+
+OLIDetail <- getOLIDetail('Claim2Rev', DB_source_data, refresh)
+setnames(OLIDetail, 'CurrentTicketNumber','Orig_CurrentTicketNumber')
+
+```
+
+** find the Current QDX Ticket Number and Current QDX Case Number associated with an OLI **
+From Claim, find the latest QDX Ticket number as the current QDX Ticket Number
+Lookup the QDX case number for the current Ticket Number in Cases, and use it as the current QDX Case Number for the OLI
+If there are multiple case numbers assoicated with the Ticket, take the max. value
+
+For OLI that do not have a QDX Ticket, lookup the latest QDX Case Number in the Cases to be the current QDX Case Number
+```{r}
+
+TickCnt <- Claim %>%
+         group_by (OLIID) %>%
+         summarize(TickCnt = n_distinct(TicketNumber))
+
+temp <- Claim %>%
+        group_by(OLIID, TicketNumber) %>%
+        slice(which.max(CaseNumber))         
+    
+QDX_CurrentTicket <- temp %>%
+         group_by(OLIID) %>%
+         slice(which.max(TicketNumber)) %>%
+         select(OLIID, TicketNumber, CaseNumber, BillingCaseStatusSummary1, BillingCaseStatusSummary2, BillingCaseStatusCode, BillingCaseStatus)
+
+setnames(QDX_CurrentTicket, c('TicketNumber','CaseNumber'),c('QDXTicketNumber','QDXCaseNumber'))
+
+
+CaseCnt <- Cases %>%
+           group_by(caseAccession) %>%
+           summarize(CaseCnt = n_distinct(caseCaseNum))
+
+QDX_CurrentCase <- Cases %>%
+                   group_by(caseAccession) %>%
+                   slice(which.max(caseCaseNum)) %>%
+                   select(caseCaseNum, caseAccession)
+```
+** add the TickCnt, CaseCnt, QDX Current Ticket Number and QDX Current Case Number to OLIDetail **
+
+```{r}
+
+OLIDetail <- left_join(OLIDetail, TickCnt, by='OLIID')
+OLIDetail <- left_join(OLIDetail, CaseCnt, by=c('OLIID'='caseAccession'))
+
+OLIDetail <- left_join(OLIDetail, QDX_CurrentTicket, by='OLIID')
+OLIDetail <- left_join(OLIDetail, QDX_CurrentCase, by=c('OLIID'='caseAccession'))
+
+a <- which(is.na(OLIDetail$CurrentQDXCaseNumber))
+OLIDetail[a,'QDXCaseNumber'] <- OLIDetail[a,'caseCaseNum']
+
+
+##############
+
+OLI_info <- OLIDetail %>%
+            select(OrderID, OLIID, BilledCurrency, Test, TestDeliveredDate, OrderStartDate,
+                   ##
+                   QDXTicketNumber, QDXCaseNumber, TickCnt, CaseCnt,
+                   Status, BillingCaseStatusCode, BillingCaseStatus,
+                   BillingCaseStatusSummary1, BillingCaseStatusSummary2,
+                   RevenueStatus, TestDelivered, IsClaim,  IsFullyAdjudicated,
+                   Reportable, IsCharge,
+                   ListPrice, ContractedPrice,
+                   ##
+                   Tier1Payor, Tier1PayorName, Tier1PayorID,
+                   Tier2Payor, Tier2PayorName, Tier2PayorID,
+                   Tier4Payor, Tier4PayorName, Tier4PayorID,
+                   FinancialCategory, QDXInsPlanCode, LineOfBenefit,
+                   ##
+                   BusinessUnit, InternationalArea, Division, Country,
+                   Territory, TerritoryRegion, TerritoryArea,
+                   ##
+                   OrderingHCPCity, OrderingHCPState, OrderingHCPCountry,
+                   IsOrderingHCPCTR, IsOrderingHCPPECOS
+                   ,
+                   NodalStatus, ReportingGroup, RiskGroup,
+                   EstimatedNCCNRisk, SubmittedNCCNRisk, FavorablePathologyComparison,
+                   Specialty
+                   )
+
+#OLI_Utilization <-getOLIDetail('Utilization', DB_source_data, refresh)
+#Summarized_Utilization <- OLI_Utilization %>%
+#                          select(OLIID, NodalStatus, ReportingGroup, RiskGroup,
+#                                 EstimatedNCCNRisk, SubmittedNCCNRisk, FavorablePathologyComparison,
+#                                 Specialty)
+
+# update the wording for Micromets
+a <- which(OLI_info$NodalStatus == 'Micromets (pN1mi: 0.2 - 2.0mm)')
+OLI_info[a,"ReportingGroup"] <- OLI_info[a,"NodalStatus"]
+
+
+rm(CaseCnt, TickCnt, QDX_CurrentCase, QDX_CurrentTicket)
+
+
+```
+
+```{r}
+```
+
+
+** Summarize the Revenue data by grp_var: OLIID **
+```{r Summarize Revenue}
+print(paste('OLI_Claim2Rev.R : summarize Revenue numbers start',Sys.time(), sep = " "))
+
+Summarize_Revenue_group<-
+    Revenue %>%
+    group_by_(.dots=grp_var) 
+
+Summarized_Revenue <- 
+    Summarize_Revenue_group%>%
+    summarize(Revenue = sum(TotalRevenue),
+              AccrualRevenue = sum(TotalAccrualRevenue),
+              CashRevenue = sum(TotalCashRevenue),
+              USDRevenue = sum(TotalUSDRevenue),
+              USDAccrualRevenue = sum(TotalUSDAccrualRevenue),
+              USDCashRevenue = sum(TotalUSDCashRevenue))
+
+print(paste('OLI_Claim2Rev.R : summarize Revenue numbers finish',Sys.time(), sep = " "))
+
+```
+
+
+** Summarize the Claim (Charge, Payment, Adjustment, Outstanding) by grp_var: OLI**
+Quadax provides claim charge, total amount received per ticket, total amount adjusted per ticket and current ticket balance in the Claim file.
+At all time, per a ticket, the charge amount = sum of (Received amount + adjustment amount + ticket balance)
+
+For GHI Payor Analytics report, we reverse the sign of received amount, adjustment amount. 
+
+```{r Summarize Claim}
+
+print(paste('OLI_Claim2Rev.R : summarize Claim charge and outstanding numbers start',Sys.time(), sep = " "))
+
+temp = c('ClmAmtRec','ClmAmtAdj')
+for (i in seq_along(temp)) {
+    Claim[temp[[i]]] <- Claim[temp[[i]]] *-1
+}
+
+
+## loading plyr mess up the group by in dplyr
+Summarized_Claim <-
+    Claim %>%
+    group_by_(.dots=grp_var) %>%
+    summarize(Charge = sum(TXNAmount),
+#              Payment_amt = sum(ClmAmtRec),
+#              Adjust_amt = sum(ClmAmtAdj),
+              'Total Outstanding' = sum(ClmTickBal))
+
+print(paste('OLI_Claim2Rev.R : summarize Claim charge and outstanding numbers finish', Sys.time(), sep = " "))
+
+# nrow(unique(Claim, by = c('OLIID','TicketNumber'))) # not matching - this is from data.table, returning a data.table with duplicated rows removed. This works with Keyed vector..need to read more. 
+# to count # of unique combination 
+# uniqueN(Claim, by = c('OLIID','TicketNumber')) # mactching number
+# nrow(unique(Claim[c('OLIID','TicketNumber')])) # matching number
+```
+
+** Summarize the Payment **
+For Payor Analytics & reporting, reverse the sign for all Payment TXNAmount and Adjustment (except Refund) TXNAmount.
+
+Then summarize the payment and adjustment amounts.
+Total adjustment for an OLI are the sum of 'AD' and 'AC' transaction, excluding CIE and Refund.
+CIE is adjustment to the charges; Refund is adjustment to Payment.
+
+OL000755178, OL000754736,OL000754587 
+multi ticket: OL000613861, OL000739220, OL000740430
+
+
+```{r Summarize Payment & Adjustment}
+
+print(paste('OLI_Claim2Rev.R : summarize Payment & Adjustment numbers start',Sys.time(), sep = " "))
+
+# flipping the sign of adjustments except Refund
+a <- which((!is.na(Pymnt$GHIAdjustmentCode)) & (Pymnt$GHIAdjustmentCode != 'GH04'))
+Pymnt[a,"TXNAmount"] <- Pymnt[a,"TXNAmount"] * -1
+
+# flip the sign of Payor & Patient payment
+a <- which(Pymnt$TXNType %in% c('RI',"RP"))
+Pymnt[a,"TXNAmount"] <- Pymnt[a,"TXNAmount"] * -1
+
+Summarized_Payor_Pymnt <- Pymnt[Pymnt$TXNType=='RI',] %>%
+                          group_by_(.dots=grp_var) %>%
+                          summarize(PayorPaid = sum(TXNAmount))
+
+Summarized_Patient_Pymnt <- Pymnt[Pymnt$TXNType=='RP',] %>%
+                            group_by_(.dots=grp_var) %>%
+                            summarize(PatientPaid = sum(TXNAmount))
+
+# calculate the total adjustment, excluding charge in error (GH04) and refund & refund reversal (GH09)
+a <- which( Pymnt$TXNType %in% c('AD','AC') &
+            (Pymnt$GHIAdjustmentCode != 'GH04' & Pymnt$GHIAdjustmentCode != 'GH09')
+          )
+Summarized_Adjustment <- Pymnt[a,] %>%
+                         group_by_(.dots=grp_var) %>%
+                         summarize('Total Adjustment' = sum(TXNAmount))
+
+
+# calculate the subTotal per Adjustment group
+a <- which(Pymnt$TXNType %in% c('AD','AC') & Pymnt$OLIID != '')
+temp <- melt(Pymnt[a,c(grp_var,'AdjustmentGroup','TXNAmount')], id.vars=c(grp_var,'AdjustmentGroup'))
+Summarized_Adj_group <- dcast(temp, ...~variable, sum, na.rm=TRUE)
+Summarized_Adj_group <- dcast(Summarized_Adj_group,
+                              paste(paste(grp_var,collapse = "+"),"AdjustmentGroup",sep="~"),
+                              value.var = 'TXNAmount')
+
+rm(temp)
+print(paste('OLI_Claim2Rev.R : summarize Payment & Adjustment numbers finish',Sys.time(), sep = " "))
+
+```
+
+** Construct the Claim2Rev dataset **
+Claim2Rev provides summarized data per OLI.
+It includes the OLI Id, Test, Payor & Plan, Claim amt, Receipt (Payment, Adjustment, Outstanding), Recoginized Revenue amt.
+
+```{r combine summarized data into Claim2Rev}
+
+print(paste('OLI_Claim2Rev.R : join the summarized numbers into ClaimTicket2Rev report start',Sys.time(), sep = " "))
+
+## Genreate a report for each OLI + Ticket Number, the summary of Claim (charge & outstanding), Payment, Adjustment
+#Summarized_Utilization,
+Claim2Rev<-
+list(OLI_info,
+     Summarized_Revenue,
+     Summarized_Claim,
+     Summarized_Payor_Pymnt,Summarized_Patient_Pymnt,
+     Summarized_Adjustment, Summarized_Adj_group) %>%
+    Reduce(function(dtf1,dtf2) left_join(dtf1,dtf2), .)
+#full
+
+temp = c('Charge','Charged in Error', 'PayorPaid','PatientPaid', 'Refund & Refund Reversal',
+         "Revenue", "AccrualRevenue", "CashRevenue",
+         "USDRevenue", "USDAccrualRevenue", "USDCashRevenue",
+         "Total Outstanding",
+         "All other Adjustment", "GHI Adjustment", "Insurance Adjustment", "Revenue Impact Adjustment",
+         "TickCnt")
+for (i in seq_along(temp)) {
+    #print(temp[[i]])
+    a <- which(is.na(Claim2Rev[temp[[i]]]))
+    Claim2Rev[a, temp[[i]]] <- 0.00
+}
+
+Claim2Rev <- Claim2Rev %>%
+             mutate('Total Payment' = PayorPaid + PatientPaid + `Refund & Refund Reversal`)
+
+Claim2Rev <- Claim2Rev %>%
+             mutate('Total Billed' = Charge + `Charged in Error`)
+
+#target = 'Claim2Rev.txt'
+#write.table(Claim2Rev, file = paste(output_folder,target,sep=""), sep="|", row.names=FALSE, col.names=TRUE, na="")
+
+rm(list = ls()[grep("^Summarize*", ls())])
+
+print(paste('OLI_Claim2Rev.R : join the summarized numbers into ClaimTicket2Rev report finish',Sys.time(), sep = " "))
+
+```
+
+** Read appeal status data **
+and make a wide version with 1 appeal case per row, span appeal levels 
+
+```{r}
+appeal_status_list <- getAppeals(DB_source_data, refresh)
+
+appeal_status_wide <- data.frame(appeal_status_list[2])
+latest_appealLvl <- data.frame(appeal_status_list[3])
+
+complete_appeal <- getAppealSuccess(DB_source_data, refresh)
+
+```
+
+
+** Enhance Claim2Rev with appeal and PA data **
+
+```{r}
+select_col <- c('appealCaseNumber',
+                'A1','A2','A3','A4','A5','ER','L1','L2','L3',
+                'A1_Status','A2_Status','A3_Status','A4_Status','A5_Status','ER_Status','L1_Status','L2_Status','L3_Status')
+Claim2Rev <-  left_join(Claim2Rev, appeal_status_wide[,select_col], by=c('QDXCaseNumber' = 'appealCaseNumber'))
+
+select_col = c('appealCaseNumber', 'lastappealEntryDt',
+               'LastAppealLevel',
+               'lastappealStatus',
+               'appealDenReasonCode','appealDenReasonDesc')
+Claim2Rev <-  left_join(Claim2Rev, latest_appealLvl[,select_col], by=c('QDXCaseNumber' = 'appealCaseNumber'))
+
+select_col = c('appealCaseNum','appealSuccess',
+               'appealAmtChg','appealAmtChgExp','appealAmtAllow',
+               'appealAmtClmRec',
+               'appealAmt','appealAmtAplRec',
+               'appealRptDt','appealCurrency')
+
+
+Claim2Rev <- left_join(Claim2Rev, complete_appeal[,select_col], by=c('QDXCaseNumber' = 'appealCaseNum'))
+#Claim2Rev_2 <- left_join(Claim2Rev_2, complete_appeal[,col_complete_appeal], by=c('QDXTicketNumber' = 'appealTickNum'))
+
+## calculate the appealResult
+Claim2Rev[which(Claim2Rev$appealSuccess==1),'appealResult'] <- 'Success'
+Claim2Rev[which(Claim2Rev$appealSuccess==0),'appealResult'] <- 'Failed'
+
+# Scenario : appealSuccess is null but there is appeal Den Reason -> appeal is in process
+a <- is.na(Claim2Rev$appealSuccess)
+b <- is.na(Claim2Rev$appealDenReason)
+Claim2Rev[which(a & !b),'appealResult'] <- 'In Process'
+
+QDX_complete_appeal_status <- c('Completed','Final Review','Due from Patient')
+
+# if Billing Status is in complete status -> conclude the appeal is removed
+a <- (Claim2Rev$appealResult == 'In Process')
+b <- (Claim2Rev$BillingCaseStatusSummary2 %in% QDX_complete_appeal_status)
+Claim2Rev[which(a & b),'appealResult'] <- 'Removed'
+
+## 'correct' BillingCaseStatusSummary2
+
+# Scenario appeal case is open with the current ticket for the OLI, BillignCaseStatusSummary2 is not appeal
+c <- Claim2Rev$BillingCaseStatusSummary2 == 'Appeals'
+Claim2Rev[which(a & !b & !c), 'BillingCaseStatusSummary2'] <- 'Appeals'
+
+# Scenario appealResult is either success or fail, Billing Status is not in the QDX_complete_appeal_status,
+a <- Claim2Rev$appealResult %in% c('Failed','Success')
+Claim2Rev[which(a & !b),'BillingCaseStatusSummary2'] <- 'Final Review'
+Claim2Rev[which(a & !b),'BillingCaseStatus'] <- 'Final Review'
+
+a <- is.na(Claim2Rev$appealResult)
+Claim2Rev[which(a & c),'BillingCaseStatusSummary2'] <- 'Claim in Process'
+
+rm(appeal_status_list)
+```
+** Get Prior Authorization**
+
+case 1146991 has " in the prior number freeform field
+
+```{r}
+QDX_PA_Case <- getQDXPA(DB_source_data, refresh)
+
+select_col <- c('priorAuthCaseNum','priorAuthDate','priorAuthEnteredDt','priorAuthEnteredTime',
+                'priorAuthResult', 'priorAuthResult_Category','priorAuthReqDesc')
+
+Claim2Rev <- left_join(Claim2Rev, QDX_PA_Case[,select_col], by=c('QDXCaseNumber' = 'priorAuthCaseNum'))
+
+
+# add a PA_Category with 'Not Requested' to flag those OLIs which PA is not requested.
+Claim2Rev$QDX_priorAuthResult_Category <- Claim2Rev$priorAuthResult_Category
+a <- is.na(Claim2Rev$priorAuthResult_Category)
+Claim2Rev[which(a),'priorAuthResult_Category'] <- "Not Requested"
+
+```
+
+
+**Create a OLI detail jonural entry**
+```{r TXN Detail}
+
+#select_col <- c("OLIID","Total Billed","Total Outstanding","Total Payment","Revenue")
+select_col <- c("OLIID","PayorPaid","PatientPaid","Total Outstanding")
+OLI_TTXN<-melt(Claim2Rev[,select_col],
+               id.vars=("OLIID"), variable_name="TXNType", value_name="TXNAmount")
+setnames(OLI_TTXN,c("value","variable"),c("TXNAmount","TXNTypeDesc"))
+
+OLI_TTXN <- mutate(OLI_TTXN, TXNCategory = 'Receipts', TXNSubCategory = 'Payment')
+
+levels(OLI_TTXN$TXNTypeDesc)[match("Total Outstanding",levels(OLI_TTXN$TXNTypeDesc))] <- 'Outstanding'
+OLI_TTXN[OLI_TTXN$TXNTypeDesc == 'Outstanding','TXNSubCategory'] <- 'Outstanding'
+
+
+# retrieve adjusment transaction
+Adjustment_TTXN <- Pymnt %>%
+                   dplyr::filter(TXNType %in% c('AC','AD')) %>%
+                   group_by_(.dots=c(grp_var,'AdjustmentGroup','GHIAdjustmentCode','CategoryDesc','QDXAdjustmentCode','Description')) %>%
+                   summarize(sum_TXN = sum(TXNAmount))
+setnames(Adjustment_TTXN, c('sum_TXN'),c('TXNAmount'))
+Adjustment_TTXN <- Adjustment_TTXN %>%
+                   mutate(TXNTypeDesc = paste(GHIAdjustmentCode, ":",CategoryDesc,sep=""),
+                          TXNCategory = 'Receipts',
+                          TXNSubCategory = 'Adjustment')
+
+Adjustment_TTXN[Adjustment_TTXN$GHIAdjustmentCode=='GH04','TXNCategory'] <- 'Billing'
+Adjustment_TTXN[Adjustment_TTXN$GHIAdjustmentCode=='GH04','TXNSubCategory'] <- 'Charged in Error'
+Adjustment_TTXN[Adjustment_TTXN$GHIAdjustmentCode=='GH09','TXNSubCategory'] <- 'Payment'
+
+OLI_TXN <-
+list(OLI_TTXN,
+     Adjustment_TTXN) %>%
+    Reduce(function(dtf1,dtf2) bind_rows(dtf1,dtf2), .)
+
+## adding OLI_Info (w/ Payor)
+OLI_TXN <- OLI_TXN %>%
+           dplyr::filter(TXNAmount != 0.0) %>%
+           dplyr::filter(OLIID!="") %>%
+           arrange(OLIID)
+
+select_col <- c('OLIID','Test','TestDeliveredDate'
+                ,'Tier1Payor','Tier2Payor','Tier2PayorID','Tier4Payor','FinancialCategory','LineOfBenefit'
+                ,'TerritoryRegion','OrderingHCPState')
+
+OLI_TXN <- left_join(OLI_TXN, OLI_info[,select_col], by='OLIID')
+
+setnames(OLI_TXN, c('FinancialCategory'), c('Financial Category'))
+
+rm(list = ls()[grep("*_TTXN*", ls())])
+```
+
+** Add the Top Payors, BCBS, eviCore flag **
+
+```{r}
+
+prep_file_name <- "Payor-ViewSetAssignment.xlsx"
+Payor_View <- read.xlsx(paste(prep_file_path, prep_file_name, sep=""), sheetName ="SetAssignment",  colIndex=c(1:3),
+                        stringsAsFactors=FALSE, header=TRUE, colClasses=c('character','character','character'))
+
+create_set <- unique(Payor_View$Set)
+for (i in seq(length(create_set))) {
+        
+    code <- Payor_View %>%
+            dplyr::filter(Set == create_set[i]) %>%
+            select(Tier2PayorID)
+        
+    Claim2Rev[Claim2Rev$Tier2PayorID %in% code$Tier2PayorID, create_set[i]] <-'1'
+    OLI_TXN[OLI_TXN$Tier2PayorID %in% code$Tier2PayorID, create_set[i]] <-'1'
+}
+
+rm(code, Payor_View)
+######
+target = 'Claim2Rev.txt'
+write.table(Claim2Rev, file = paste(output_folder,target,sep=""), sep="|", row.names=FALSE, col.names=TRUE, na="")
+
+
+
+target = 'OLI_TXN_Detail.txt'
+write.table(OLI_TXN, file = paste(output_folder,target,sep=""), sep="|", row.names=FALSE, col.names=TRUE, na="")
+
+```
+

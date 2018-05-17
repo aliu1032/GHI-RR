@@ -1,0 +1,42 @@
+"0","```r
+getQDXCases <- function (usage, folder, refresh = 0){
+    
+    target <- \"ODSProd01_Quadax_QDX_claim_case_status.txt\"
+    
+    print(paste('stdCases : reading Claim Cases status data ',Sys.time(), sep = \" \"))
+    if (refresh == 1) {
+        con <-odbcDriverConnect(connection = \"Driver={ODBC Driver 13 for SQL Server};trusted_connection=yes;
+                               server=ODSProd01;
+                               database=Quadax\")
+        #a <- trimws(readr::read_lines(\"./data/QDX_stdClaim.sql\"))
+        #sql <- paste(trimws(readr::read_lines(\"./data/QDX_stdCases.sql\")), collapse=\"\n\")
+        sql <- paste(trimws(readr::read_lines(paste(sql_folder, \"QDX_Cases.sql\",sep=\"\"))), collapse=\"\n\")
+        Cases <- sqlQuery(con, sql, stringsAsFactors = FALSE)
+        write.table(Cases,paste(folder,target,sep=\"\"), sep=\"|\",row.names=FALSE)
+        odbcClose(con)
+    } else {
+        Cases <- read.table(paste(folder,target,sep=\"\"), sep=\"|\", header=TRUE, stringsAsFactors = FALSE)
+    }
+    
+    Cases$caseUpdateDate <- ymd(Cases$caseUpdateDate)
+    # adding '01' to workaround the need for date
+    Cases$caseEntryYrMth <- as.Date(paste(Cases$caseEntryYrMth,'01',sep=\"\"), format='%Y%m%d')
+    Cases$caseTicketNum <- as.character(Cases$caseTicketNum)
+    Cases$caseCaseNum <- as.character(Cases$caseCaseNum)
+    Cases$caseAddedDateTime <- paste(Cases$caseDateAdded, \" \", Cases$caseTimeAdded)
+    Cases$caseAddedDateTime <-ymd_hms(Cases$caseAddedDateTime)
+    
+    
+    prep_file_name <- \"QDX_ClaimDataPrep.xlsx\"
+    case_note <- read.xlsx(paste(prep_file_path, prep_file_name, sep=\"\"), sheetName =\"QDXCases\", startRow=2,
+                            colIndex=c(2,6:9),stringsAsFactors=FALSE)
+    
+    if (usage == 'case_reference') {
+        select_columns <- case_note[which(case_note$case_reference==1),'Synonyms']
+    } else if (usage == 'QDXClaim_CaseStatus') {
+        select_columns <- case_note[which(case_note$QDXClaim_CaseStatus==1),'Synonyms']
+    }
+    return(Cases[,select_columns])
+}
+
+```"

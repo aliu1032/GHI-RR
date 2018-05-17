@@ -1,0 +1,5 @@
+"0","    temp2 <- output[OSM_Order_Line_Item_ID__c %in% a$OSM_Order_Line_Item_ID__c,]
+"
+"2","Error in OSM_Order_Line_Item_ID__c %in% a$OSM_Order_Line_Item_ID__c : 
+  object 'OSM_Order_Line_Item_ID__c' not found
+"

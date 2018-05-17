@@ -1,0 +1,97 @@
+---
+title: "PTC & PTV data preparation"
+Extract PTC and PTV for Insurance Payors and Plans
+Format the data to provide
+- summary for insurance clinical criteria coverage by test
+- for comparing Patient clinical criteria on OLL with the insurance payor/plan coverage
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## get the PTC from StagingDB
+
+flatten the clincial criteria with each clinical criteria & picklist option as header
+insert T/F to indicate whether the selection is selected in PTC
+
+
+```{r get a PTC data dump from StagingDB}
+
+PTC <- getPTC(DB_source_data, 0)
+
+# build a table with criteria selection as the header
+Criteria_Enum <- read.xlsx(paste(prep_file_path,'Enum.xlsx',sep=''), sheetName ="Criteria_ENUM", colIndex=c(1:3,5:6), stringsAsFactors=FALSE, header=TRUE)
+
+################
+unique_test <- unique(Criteria_Enum$Test)
+for (i in seq(1, length(unique_test))) {
+    test_criteria <- unique(Criteria_Enum[Criteria_Enum$Test==unique_test[i],'SFDC_API_Name'])
+    test_PTC <- PTC %>%
+                dplyr::filter(Test == unique_test[i]) %>%
+                select(c(names(PTC)[1:14],test_criteria))
+    for (j in seq(1, length(test_criteria))) {
+        test_criteria_selection <- unique(Criteria_Enum[(Criteria_Enum$Test == unique_test[i] &
+                                                         Criteria_Enum$SFDC_API_Name==test_criteria[j]),'Criteria_Enum'])
+        
+        for (k in seq(1, length(test_criteria_selection))){
+            #print(test_criteria_selection[k])
+ 
+            search_pattern = test_criteria_selection[k]
+            
+            # if the criteria has (), need to prefixes with \ to include the () in search
+            search_pattern <- sub("\\(", "\\\\(", search_pattern)
+            search_pattern <- sub("\\)", "\\\\)", search_pattern)
+
+            # Stage I is found for Stage II
+            # test pattern: if end of the string, positive look backward, it is end by letter I
+            # append the search pattern: (?!I) - negative look ahead, the string is not followed by I
+            if (grepl("$(?<=I)",test_criteria_selection[k], perl=TRUE)){
+                search_pattern = paste(test_criteria_selection[k],"(?!I)",sep="")
+            }
+            new_col = paste(test_criteria[j],"=",test_criteria_selection[k])
+            test_PTC[new_col] <- lapply(test_PTC[test_criteria[j]], function(input) grepl(search_pattern, input, perl=TRUE))
+            }
+    }
+    target <- paste(unique_test[i],"_PTC_Summary.txt",sep="")
+    write.table(test_PTC, paste(DB_source_data,target,sep=''), sep="|",row.names=FALSE, qmethod = "double", na="")
+}
+```
+
+## get the PTV from StagingDB
+
+flatten the Prior Authorization with each picklist option as header
+insert T/F to indicate whether the selection is selected
+
+```{r}
+
+
+PTV <- getPTV(DB_source_data, 1)
+
+# build a table with criteria selection as the header
+PA_Enum <- read.xlsx(paste(prep_file_path,'Enum.xlsx',sep=''), sheetName ="PA_ENUM", colIndex=c(6), stringsAsFactors=FALSE, header=TRUE)
+
+#iternate every option of Prior Authorization field, flatten the column
+for (i in seq(1, length(PA_Enum$Enum))) {
+    search_pattern <- PA_Enum$Enum[i]
+
+    # if the Enum has (), need to prefixes with \ to include the () in search
+    search_pattern <- sub("\\(", "\\\\(", search_pattern)
+    search_pattern <- sub("\\)", "\\\\)", search_pattern)
+    #print (search_pattern)
+    
+    # adding new column of T/F for each PA selection
+    PTV[PA_Enum$Enum[i]] <- lapply(PTV['OSM_Prior_Authorization__c'], function(input) grepl(search_pattern, input, perl=TRUE))
+    
+    # PTV$Column is different from PTV['Column']
+}
+
+target <- "PTV_Summary.txt"
+write.table(PTV, paste(DB_source_data,target,sep=''), sep="|",row.names=FALSE, qmethod = "double", na="")
+
+
+```
+
+
+

@@ -1,0 +1,9 @@
+"0","    last_appealLvl_1 <- setnames(last_appealLvl_1, c(appealCaseNumber, lastDenialLetterDt,
+                                                     lastappealEntryDt, lastappealLevel,
+                                                     lastappealLvlCode,
+                                                     lastappealLevelDesc, lastappealStatus, lastappealStatusDesc,
+                                                     lastappealInsCode, lastappealDenReason, lastappealDenResonDesc))
+"
+"2","Error in setnames(last_appealLvl_1, c(appealCaseNumber, lastDenialLetterDt,  : 
+  object 'appealCaseNumber' not found
+"

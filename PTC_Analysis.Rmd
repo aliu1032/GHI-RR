@@ -1,0 +1,216 @@
+---
+title: "PTC_Analysis"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## get the PTC from StagingDB
+
+This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+
+When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+
+
+
+```{r get a PTC data dump from StagingDB}
+
+PTC <- getPTC(DB_source_data, 0)
+
+# build a table with criteria selection as the header
+Criteria_Enum <- read.xlsx(paste(prep_file_path,'Criteria_Enum.xlsx',sep=''), sheetName ="ENUM", colIndex=c(1:3,5:6), stringsAsFactors=FALSE, header=TRUE)
+
+################
+temp_PTC <- PTC
+unique_test <- unique(Criteria_Enum$Test)
+for (i in seq(1, length(unique_test))) {
+    test_criteria <- unique(Criteria_Enum[Criteria_Enum$Test==unique_test[i],'SFDC_API_Name'])
+    temptemp <- temp_PTC %>%
+                dplyr::filter(Test == unique_test[i]) %>%
+                select(c(names(PTC)[1:14],test_criteria))
+    for (j in seq(1, length(test_criteria))) {
+        test_criteria_selection <- unique(Criteria_Enum[(Criteria_Enum$Test == unique_test[i] &
+                                                         Criteria_Enum$SFDC_API_Name==test_criteria[j]),'Criteria_Enum'])
+        
+        # IBC, IIIA (T1-3, N1-2) has error
+        for (k in seq(1, length(test_criteria_selection))){
+            #print(test_criteria_selection[k])
+ 
+            search_pattern = test_criteria_selection[k]
+            
+            # if the criteria has (), need to prefixes with \ to include the () in search
+            search_pattern <- sub("\\(", "\\\\(", search_pattern)
+            search_pattern <- sub("\\)", "\\\\)", search_pattern)
+
+            # Stage I is found for Stage II
+            # test pattern: if end of the string, positive look backward, it is end by letter I
+            # append the search pattern: (?!I) - negative look ahead, the string is not followed by I
+            if (grepl("$(?<=I)",test_criteria_selection[k], perl=TRUE)){
+                search_pattern = paste(test_criteria_selection[k],"(?!I)",sep="")
+#            } else {
+#                search_pattern = test_criteria_selection[k]
+            }
+            new_col = paste(test_criteria[j],"=",test_criteria_selection[k])
+            temptemp[new_col] <- lapply(temptemp[test_criteria[j]], function(input) grepl(search_pattern, input, perl=TRUE))
+            }
+    }
+    target <- paste(unique_test[i],"_PTC_Summary.txt",sep="")
+    write.table(temptemp, paste(DB_source_data,target,sep=''), sep="|",row.names=FALSE, qmethod = "double", na="")
+}
+###############
+
+## break out by tab per product
+target <- 'Expanded_PTC.txt'
+write.table(temp_PTC, paste(DB_source_data,target,sep=''), sep="|",row.names=FALSE, qmethod = "double", na="")
+
+target <- 'Expanded_PTC_Excel2.xlsx'
+write.xlsx2(temp_PTC,paste(DB_source_data,target,sep=''), sheetName = 'IBC', col.names=TRUE)
+
+
+a <- PTC %>%
+     filter(!is.na(Tier4PayorId)) %>%
+     select(Name, Policy, Test, Tier2PayorName, Tier2PayorId, Payor_Status
+                  , Tier4PayorName, Tier4PayorId, Plan_Status, Financial_Category
+                  , Effective_Start_Date, Effective_End_Date)
+```
+
+## Separate the PTC by Test products
+
+```{r IBC PTC}
+IBC_PTC <- PTC %>%
+           dplyr::filter(Test=="IBC" & Policy %in% c("CT","MP")) %>%
+           select(Name, Policy, Test, Tier2PayorName, Tier2PayorId, Payor_Status
+                  , Tier4PayorName, Tier4PayorId, Plan_Status, Financial_Category
+                  , Effective_Start_Date, Effective_End_Date
+                  , Male, Micromets, MultiTumor, Nodes1to3, Nodes4plus
+                  , NodeNegative, ERNegative, Her2Positive
+                  , NodeUnknownUncertain, NodeUnspecified
+                  , NonMedOncOrders
+                  , IBCOutofCriteria, ptc_Notes) %>%
+           mutate(w_Criteria = 
+                      Male + Micromets + MultiTumor + Nodes1to3 + Nodes4plus
+                  + NodeNegative + ERNegative + Her2Positive
+                  + NodeUnknownUncertain + NodeUnspecified
+                  + NonMedOncOrders + IBCOutofCriteria)
+
+Null_IBC_PTC <- IBC_PTC %>%
+                  dplyr::filter(w_Criteria == 0 & is.na(ptc_Notes))
+
+not_null = (nrow(IBC_PTC) - nrow(Null_IBC_PTC))
+work =not_null/nrow(IBC_PTC) * 100
+print(paste( "There are ", nrow(IBC_PTC), "IBC PTC records of type MP and CT"))
+print(paste( round(work, digits=0), "% of the IBC PTC records contain information. i.e. ", not_null, " rows."))
+
+IBC_PTC <- IBC_PTC %>%
+           dplyr::filter(w_Criteria > 0 | !is.na(ptc_Notes))
+
+out_folder = "C:\\Users\\aliu\\Desktop\\PTC Revision\\"
+target = 'IBC_MP_CT_PTC.txt'
+xls_target = 'IBC_MP_CT_PTC.xlsx'
+
+write.table(IBC_PTC, file = paste(folder,target,sep=""), sep=";", row.names=FALSE, col.names=TRUE, na = "", quote=TRUE)
+write.csv2(IBC_PTC, file = paste(folder,target,sep=""), row.names=FALSE, quote=TRUE)
+
+write.xlsx(IBC_PTC, file=paste(out_folder, xls_target,sep=""), row.names=FALSE, col.names=TRUE, showNA=F)
+
+```
+
+Check DCIS PTC
+
+```{r DCIS PTC}
+DCIS_PTC <- PTC %>%
+           dplyr::filter(Test=="DCIS" & Policy %in% c("CT","MP")) %>%
+           select(Name, Policy, Test, Tier2PayorName, Tier2PayorId, Payor_Status
+                  , Tier4PayorName, Tier4PayorId, Financial_Category, Plan_Status
+                  , Effective_Start_Date, Effective_End_Date
+                  , DCIS ,DCISOutofCriteria ,ptc_Notes) %>%
+           mutate(w_Criteria = DCIS + DCISOutofCriteria)
+
+Null_DCIS_PTC <- DCIS_PTC %>%
+                 dplyr::filter(w_Criteria == 0 & is.na(ptc_Notes))
+
+not_null = (nrow(DCIS_PTC) - nrow(Null_DCIS_PTC))
+work = not_null/nrow(DCIS_PTC) * 100
+print(paste( "There are ", nrow(DCIS_PTC), "DCIS PTC records of type MP and CT"))
+print(paste(round(work, digits=0), "% of the DCIS PTC records contain information. i.e. ", not_null, " rows."))
+
+
+DCIS_PTC <- DCIS_PTC %>%
+           dplyr::filter(w_Criteria > 0 | !is.na(ptc_Notes))
+
+out_folder = "C:\\Users\\aliu\\Desktop\\PTC Revision\\"
+xls_target = 'DCIS_MP_CT_PTC.xlsx'
+
+write.xlsx(DCIS_PTC, file=paste(out_folder, xls_target,sep=""), row.names=FALSE, col.names=TRUE, showNA=F)
+
+```
+
+Check Prostate PTC
+
+```{r Prostate PTC}
+
+Prostate_PTC <- PTC %>%
+           dplyr::filter(Test=="Prostate" & Policy %in% c("CT","MP")) %>%
+           select(Name, Policy, Test, Tier2PayorName, Tier2PayorId, Payor_Status
+                  , Tier4PayorName, Tier4PayorId, Financial_Category, Plan_Status
+                  , Effective_Start_Date, Effective_End_Date
+                  , SubmittedGleasonScore34, SubmittedGleasonScoreEQ33, SubmittedGleasonScoreEQ43
+                  , AgeofBiopsyLT6mos ,AgeofBiopsy6to36mos
+                  , ProstateOutofCriteria ,ptc_Notes) %>%
+           mutate(w_Criteria = SubmittedGleasonScore34 + SubmittedGleasonScoreEQ33 + SubmittedGleasonScoreEQ43
+                  + AgeofBiopsyLT6mos + AgeofBiopsy6to36mos
+                  + ProstateOutofCriteria)
+
+Null_Prostate_PTC <- Prostate_PTC %>%
+                     dplyr::filter(w_Criteria == 0 & is.na(ptc_Notes))
+
+not_null = (nrow(Prostate_PTC) - nrow(Null_Prostate_PTC))
+work = not_null/nrow(Prostate_PTC) * 100
+print(paste( "There are ", nrow(Prostate_PTC), "Prostate PTC records of type MP & CT"))
+print(paste(round(work, digits=4), "% of the Prostate PTC records contain information. i.e. ", not_null, "rows."))
+
+
+Prostate_PTC <- Prostate_PTC %>%
+           dplyr::filter(w_Criteria > 0 | !is.na(ptc_Notes))
+
+out_folder = "C:\\Users\\aliu\\Desktop\\PTC Revision\\"
+xls_target = 'Prostate_MP_CT_PTC.xlsx'
+
+write.xlsx(Prostate_PTC, file=paste(out_folder, xls_target,sep=""), row.names=FALSE, col.names=TRUE, showNA=F)
+
+write.xlsx(Null_Prostate_PTC, file=paste(out_folder, "Null_Prostate_PTC.xlsx" ,sep=""), row.names=FALSE, col.names=TRUE, showNA=F)
+
+```
+
+
+Check Colon PTC
+
+```{r Colon PTC}
+Colon_PTC <- PTC %>%
+           dplyr::filter(Test=="Colon" & Policy %in% c("CT","MP")) %>%
+           select(Name, Policy, Test, Tier2PayorName, Tier2PayorId, Payor_Status
+                  , Tier4PayorName, Tier4PayorId, Financial_Category, Plan_Status
+                  , Effective_Start_Date, Effective_End_Date
+                  , ClinicalStageII, ClnicalStageIIIAB, ClinicalStageIIIC
+                  , ColonOutofCriteria, ptc_Notes) %>%
+           mutate(w_Criteria = ClinicalStageII + ClnicalStageIIIAB + ClinicalStageIIIC + ColonOutofCriteria)
+
+Null_Colon_PTC <- Colon_PTC %>%
+                  dplyr::filter(w_Criteria == 0 & is.na(ptc_Notes))
+
+not_null = (nrow(Colon_PTC) - nrow(Null_Colon_PTC))
+work = not_null/nrow(Colon_PTC) * 100
+print(paste( "There are ", nrow(Colon_PTC), "Colon PTC records of type MP and CT"))
+print(paste( round(work, digits=0), "% of the Colon PTC records contain information. i.e ", not_null, "rows." ))
+
+Colon_PTC <- Colon_PTC %>%
+           dplyr::filter(w_Criteria > 0 | !is.na(ptc_Notes))
+
+out_folder = "C:\\Users\\aliu\\Desktop\\PTC Revision\\"
+xls_target = 'Colon_MP_CT_PTC.xlsx'
+
+write.xlsx(Colon_PTC, file=paste(out_folder, xls_target,sep=""), row.names=FALSE, col.names=TRUE, showNA=F)
+
+```

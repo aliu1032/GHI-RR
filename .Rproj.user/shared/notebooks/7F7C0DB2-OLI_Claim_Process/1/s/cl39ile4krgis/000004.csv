@@ -1,0 +1,5 @@
+"0","SOMN_Cases <- getGHISOMNcase(DB_source_data,refresh=1)
+"
+"2","Error in odbcDriverConnect(connection = ""Driver={ODBC Driver 13 for SQL Server};trusted_connection=yes;\n                       server=EDWStage;\n                       database=EDWDB"") : 
+  could not find function ""odbcDriverConnect""
+"

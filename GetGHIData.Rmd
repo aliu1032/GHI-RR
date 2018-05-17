@@ -1,0 +1,336 @@
+---
+title: "GetGHIData"
+output:
+  html_document:
+    df_print: paged
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+
+** Get the Test revenue from EDWDB.fctRevenue table **
+
+```{r GHIRevenue}
+getGHIRevenue <- function(usage, folder, refresh = 0) {
+   
+    target <- 'EDWStage_EDWDB_RevenueDetail.txt'
+
+    if (refresh == 1) {
+        
+        con <-odbcDriverConnect(connection = "Driver={ODBC Driver 13 for SQL Server};trusted_connection=yes;
+                       server=EDWStage;
+                       database=EDWDB")
+        sql <- paste(trimws(readr::read_lines(paste(sql_folder, "EDWDB_fctRevenue.sql",sep=""))), collapse="\n")
+        output <- sqlQuery(con, sql, stringsAsFactors = FALSE)
+        write.table(output,paste(folder,target,sep=""), sep="|",row.names=FALSE)
+        odbcClose(con)
+    } else {
+        output <- read.table(paste(folder,target,sep=""), sep="|", header=TRUE, stringsAsFactors = FALSE, fill=TRUE)
+    }
+    
+    prep_file_name <- "GHI_fctRevenue.xlsx"
+    prep_note <- read.xlsx(paste(prep_file_path, prep_file_name, sep=""), sheetName ="Revenue_data", startRow=2,
+                            colIndex=c(12,14,16:17),stringsAsFactors=FALSE)
+
+    # rename columns
+    rename_col <- match(prep_note$TargetColumn,names(output))
+    names(output)[na.omit(rename_col)] <- prep_note$Synonyms[which(!is.na(rename_col))]
+
+    output$TestDeliveredDate <- ymd(output$TestDeliveredDate)
+    output$ClaimPeriodDate <- ymd(output$ClaimPeriodDate)
+    output$AccountingPeriodDate <- ymd(output$AccountingPeriodDate)
+    
+    output$Tier1Payor <- paste(output$Tier1PayorName, "(", output$Tier1PayorID,")", sep="")
+    output$Tier2Payor <- paste(output$Tier2PayorName, "(", output$Tier2PayorID,")", sep="")
+    output$Tier4Payor <- paste(output$Tier4PayorName, "(", output$Tier4PayorID,")", sep="")
+
+    output[which(is.na(output$Tier1PayorID)),"Tier1Payor"] <- NA
+    output[which(is.na(output$Tier2PayorID)),"Tier2Payor"] <- NA
+    output[which(is.na(output$Tier4PayorID)),"Tier4Payor"] <- NA
+    
+    output$TicketNumber <- as.character(output$TicketNumber)
+    
+    # Enrich data: add QDX Plan's Financial Category
+    QDXinsPlansCode <- getQDXInsPlans(folder, refresh)
+    #output <- left_join(output,QDXinsPlansCode[,c('insCode','insFC','insAltId')], by=c('Tier4PayorID' = 'insAltId'))
+    #setnames(output, 'insFC','QDXInsFC')
+    output <- left_join(output,QDXinsPlansCode[,c('insPlanCode','insPlanCategory')], by=c('QDXInsPlanCode' = 'insPlanCode'))
+    setnames(output, 'insPlanCategory','QDXInsFC')
+
+
+    if (usage == 'Claim2Rev') {
+        select_columns <- prep_note[which(prep_note$Claim2Rev==1),'Synonyms']
+    } else if (usage == 'ClaimTicket'){
+        select_columns <- prep_note[which(prep_note$ClaimTicket==1),'Synonyms']
+    }
+    
+    output <- select(output, select_columns)
+    return(output)
+
+}
+```
+
+
+** Get the OLI detail from StagingDB.Analytics.stgOrderDetail table **
+
+```{r getOLIDetail}
+
+getOLIDetail <- function(usage, folder, refresh = 0) {
+    
+    target = 'EDWDB_vwfctOrderLineItem.txt'
+    
+    if (refresh == 1) {
+        con <-odbcDriverConnect(connection = "Driver={ODBC Driver 13 for SQL Server};trusted_connection=yes;
+                       server=EDWStage;
+                       database=StagingDB")
+        
+        sql <- paste(trimws(readr::read_lines(paste(sql_folder, "EDWDB_fctOrderLineItem.sql",sep=""))), collapse="\n")
+        output <- sqlQuery(con, sql, stringsAsFactors = FALSE)
+        write.table(output, paste(folder, target, sep=""), row.names=FALSE, sep="|", quote=TRUE, qmethod = "double")
+        # There is a | character in the Submitted Diagnosis field, thus need to use quote=TRUE to quote the value
+        
+        odbcClose(con)
+    } else {
+        
+        output <- read.table(paste(folder,target,sep=""), sep="|", header=TRUE, stringsAsFactors = FALSE, fill=TRUE)
+    }
+    
+    prep_file_name <- "GHI_vwFctOrderLineItem.xlsx"
+    prep_note <- read.xlsx(paste(prep_file_path, prep_file_name, sep=""), sheetName ="OrderLineItem", startRow=2, colIndex=c(9:12),stringsAsFactors=FALSE)
+    
+    #rename columns
+    #rename_col <- match(prep_note$StageDB_OrderDetail,names(output))
+    #names(output)[na.omit(rename_col)] <- prep_note$Synonyms[which(!is.na(rename_col))]
+    
+    output$TestDeliveredDate <- ymd(output$TestDeliveredDate)
+    output$DateOfService <- ymd(output$DateOfService)
+    output$OrderStartDate <- ymd(output$OrderStartDate)
+    output$OLIStartDate <- ymd(output$OLIStartDate)
+    
+    output$Tier1Payor <- paste(output$Tier1PayorName, "(", output$Tier1PayorID,")", sep="")
+    output$Tier2Payor <- paste(output$Tier2PayorName, "(", output$Tier2PayorID,")", sep="")
+    output$Tier4Payor <- paste(output$Tier4PayorName, "(", output$Tier4PayorID,")", sep="")
+
+    output[which(is.na(output$Tier1PayorID)),"Tier1Payor"] <- NA
+    output[which(is.na(output$Tier2PayorID)),"Tier2Payor"] <- NA
+    output[which(is.na(output$Tier4PayorID)),"Tier4Payor"] <- NA
+
+    output$CurrentTicketNumber <- as.character((output$CurrentTicketNumber))
+    
+    
+    # Enrich data: add QDX Plan's Financial Category
+    # there are duplicate insCode, use the 1st row of each group
+    QDXinsPlansCode <- getQDXInsPlans(folder,refresh)
+    #output <- left_join(output,QDXinsPlansCode[,c('insCode','insFC','insAltId')], by=c('Tier4PayorID' = 'insAltId'))
+    output <- left_join(output,QDXinsPlansCode[,c('insPlanCode','insPlanCategory')], by=c('QDXInsPlanCode' = 'insPlanCode'))
+    setnames(output, 'insPlanCategory','QDXInsFC')
+    
+
+    # Impute Test Delivered flag and Test Delivered Date for OLI that has a current Ticket Number
+    a <- which(!is.na(output$CurrentTicketNumber) & is.na(output$TestDeliveredDate))
+    output[a,"TestDelivered"] = 1
+    output[a,"TestDeliveredDate"] = output[a,"DateOfService"]
+    
+    #change 'In' to 'in' of BillingCaseStatusSummary2 - change in get Quadax Data : Cases as the billing case status is sourced from QDX:Cases
+    
+    # impute OLI Test status using the claim ticket information, cancelation & failure code, SFDC order status and customer status
+    
+    #1. Combining order & oli cancellation reason
+    a <- which(is.na(output$OrderLineItemCancellationReason) & !is.na(output$OrderCancellationReason))
+    output[a,"OrderLineItemCancellationReason"] = output[a,"OrderCancellationReason"]
+    
+    a <- which(!is.na(output$OrderLineItemCancellationReason) & is.na(output$OrderCancellationReason))
+    output[a,"OrderCancellationReason"] = output[a,"OrderLineItemCancellationReason"]
+    
+    #2. Derive the OLI Test status using claim ticket information, cancellation & failure code, SFDC order status and customer status
+    
+    ### Scenario: Test Delivered OLIs
+    cond <- which(output$TestDelivered == 1)
+    output[cond,"Status"] <- "Delivered"
+    output[cond,"Status Notes"] <- paste("Test Delivered = ", output[cond,"TestDelivered"], sep="")
+    
+    # Scenario: Test Delivered with either cancellation or failure code
+    a <- output$TestDelivered == 1
+    b <- !is.na(output$OrderLineItemCancellationReason) & !grepl("^$|^ $", output$OrderLineItemCancellationReason)
+    c <- !is.na(output$FailureCode) & !grepl("^$|^ $", output$FailureCode)
+    cond <- which(a & (b|c))
+    output[cond,"Status Notes"] <- paste("Test Delivered = ", output[cond,"TestDelivered"], "*", sep="")
+
+    
+    ### Scenario: Test NOT delivered OLIs, 
+    a <- output$TestDelivered == 0
+    output[a,"Status"] <- "Active"
+    
+    b <- is.na(output$OrderLineItemCancellationReason) | grepl("^$|^ $", output$OrderLineItemCancellationReason)
+    c <- is.na(output$FailureCode) | grepl("^$|^ $", output$FailureCode)
+    
+    # Scenario: Test NOT delivered and cancellation reason present
+    cond <- which(a & !b & c)
+    output[cond,"Status"] <- "Cancelled"
+    output[cond,"Status Notes"] <- output[cond,"OrderLineItemCancellationReason"]
+    
+    
+    # Scenario: Test NOT delivered and failure code present
+    cond <- which(a & b & !c)
+    output[cond,"Status"] <- "Failed"
+    output[cond,"Status Notes"] <- output[cond,"FailureMessage"]
+    
+    # Scenario: Test NOT delivered, and both failure code and cancellation reason present
+    cond <- which(a & !b & !c)
+    output[cond,"Status"] <- "Failed"
+    output[cond,"Status Notes"] <- output[cond,"FailureMessage"]
+    
+    # Scenario: Test not delivered because it is work in progress
+    a <- output$TestDelivered == 0
+    b <- output$Status == 'Active'
+    cond <- which(a & b)
+    output[cond,"Status"] <- output[cond,"CustomerStatus"]
+    
+    c <- output$CustomerStatus %in% c("In-Lab","Processing","Submitting")
+    cond <- which(a & b & c)
+    output[cond,"Status Notes"] <- output[cond,"DataEntryStatus"]
+
+
+    if (usage == 'Claim2Rev') {
+        select_column = prep_note[which(prep_note$Claim2Rev == 1), 'Synonyms']
+    } else if (usage == 'ClaimTicket') {
+        select_column = prep_note[which(prep_note$ClaimTicket == 1), 'Synonyms']
+    } 
+    
+    #else if (usage == 'ClaimTicket_wCriteria') {
+    #    select_column = prep_note[which(prep_note$ClaimTicket_wCriteria == 1),'Synonyms']
+    #} else if (usage == 'Utilization') {
+    #    select_column = prep_note[which(prep_note$Utilization == 1), 'Synonyms']
+    #} else if (usage == 'Claim_Process') {
+    #    select_column = prep_note[which(prep_note$Claim_Process == 1), 'Synonyms']
+    #}
+    
+    output <- select(output, select_column, "Status","Status Notes")
+    return (output)
+    
+    
+}
+```
+
+
+get PTC : Payor Test Criteria
+include the Payor and Plan information
+
+```{r getPTC}
+getPTC <- function (folder, refresh = 0){
+    
+    target = 'PayorTestCriteria.txt'
+    
+    if (refresh == 1) {
+        con <-odbcDriverConnect(connection = "Driver={ODBC Driver 13 for SQL Server};trusted_connection=yes;
+                       server=EDWStage;
+                       database=StagingDB")
+        sql <- paste(trimws(readr::read_lines(paste(sql_folder, "StagingDB_SFDC_PTC.sql",sep=""))), collapse="\n")
+        output <- sqlQuery(con, sql, stringsAsFactors = FALSE)
+        
+        # there is linefeed in the Extra Note field
+        write.table(output, paste(folder,target,sep=""), row.names=FALSE, sep="|", qmethod="double")
+        odbcClose(con)
+        
+    } else {
+        output <- read.table(paste(folder,target,sep=""),sep = "|", header=TRUE, stringsAsFactors = FALSE, row.names=NULL)
+    }
+    
+    return (output)
+}
+```
+
+getPTV : Payor Test Claim Validation requirement
+
+```{r}
+getPTV <- function (folder, refresh = 0){
+        
+    target = 'PayorTestValidation.txt'
+    
+    if (refresh == 1) {
+        con <-odbcDriverConnect(connection = "Driver={ODBC Driver 13 for SQL Server};trusted_connection=yes;
+                       server=EDWStage;
+                       database=StagingDB")
+        sql <- paste(trimws(readr::read_lines(paste(sql_folder, "StagingDB_SFDC_PTV.sql",sep=""))), collapse="\n")
+        output <- sqlQuery(con, sql, stringsAsFactors = FALSE)
+        
+        # there is linefeed in the Extra Note field
+        write.table(output, paste(folder,target,sep=""), row.names=FALSE, sep="|", qmethod="double")
+        odbcClose(con)
+        
+    } else {
+        output <- read.table(paste(folder,target,sep=""),sep = "|", header=TRUE, stringsAsFactors = FALSE, row.names=NULL)
+    }
+    
+    return (output)
+}
+```
+
+
+```{r getGHIPayorMaster}
+getGHIPayorMaster <- function (folder, refresh = 0) {
+
+    target <- 'SFDC_Plan_Master.txt'
+
+    if (refresh == 1) {
+        con <-odbcDriverConnect(connection = "Driver={ODBC Driver 13 for SQL Server};trusted_connection=yes;
+                       server=EDWStage;
+                       database=EDWDB")
+        sql <- paste(trimws(readr::read_lines(paste(sql_folder, "SFDC_Plan_Master.sql",sep=""))), collapse="\n")
+        output <- sqlQuery(con, sql, stringsAsFactors = FALSE)
+        write.table(output,paste(folder,target,sep=""), sep="|",row.names=FALSE)
+        odbcClose(con)
+    } else {
+        output <- read.table(paste(folder,target,sep=""), sep="|", header=TRUE, stringsAsFactors = FALSE, fill=TRUE)
+    }
+    
+    ## adding set preference flag ##
+        
+    prep_file_name <- "Payor-ViewSetAssignment.xlsx"
+    Payor_View <- read.xlsx(paste(prep_file_path, prep_file_name, sep=""), sheetName ="SetAssignment",  colIndex=c(1:3), stringsAsFactors=FALSE, header=TRUE, colClasses=c('character','character','character'))
+
+    create_set <- unique(Payor_View$Set)
+    for (i in seq(length(create_set))) {
+        
+        code <- Payor_View %>%
+                filter(Set == create_set[i]) %>%
+                select(Tier2PayorID)
+        
+        output[output$Tier2PayorId %in% code$Tier2PayorID, create_set[i]] <- '1'
+        }
+    
+    return(output)
+}
+```
+
+
+
+Getting SOMN Cases
+
+This is the best guess of the SOMN cases raised for OLI
+```{r getSOMN}
+
+getGHISOMNcase <- function (folder, refresh = 0) {
+
+    target <- 'GHI_SOMN_Cases.txt'
+
+    if (refresh == 1) {
+        con <-odbcDriverConnect(connection = "Driver={ODBC Driver 13 for SQL Server};trusted_connection=yes;
+                       server=EDWStage;
+                       database=EDWDB")
+        sql <- paste(trimws(readr::read_lines(paste(sql_folder, "GHI_SOMN_Cases.sql",sep=""))), collapse="\n")
+        output <- sqlQuery(con, sql, stringsAsFactors = FALSE)
+        write.table(output,paste(folder,target,sep=""), sep="|",row.names=FALSE)
+        odbcClose(con)
+    } else {
+        output <- read.table(paste(folder,target,sep=""), sep="|", header=TRUE, stringsAsFactors = FALSE, fill=TRUE)
+    }
+    
+    return(output)
+}
+
+```
+

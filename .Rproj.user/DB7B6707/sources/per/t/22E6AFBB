@@ -1,0 +1,22 @@
+{
+    "collab_server" : "",
+    "contents" : "",
+    "created" : 1525457977221.000,
+    "dirty" : false,
+    "encoding" : "UTF-8",
+    "folds" : "",
+    "hash" : "997823504",
+    "id" : "22E6AFBB",
+    "lastKnownWriteTime" : 1525964202,
+    "last_content_update" : 1525964202407,
+    "path" : "C:/Users/April/Documents/workspace/GHS-BR-R/GHI-RR/.Rprofile",
+    "project_path" : ".Rprofile",
+    "properties" : {
+        "cursorPosition" : "24,0",
+        "scrollLine" : "0"
+    },
+    "relative_order" : 4,
+    "source_on_save" : false,
+    "source_window" : "",
+    "type" : "r_source"
+}

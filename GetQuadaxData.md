@@ -1,0 +1,486 @@
+---
+title: "R Notebook"
+output:
+  pdf_document: default
+  html_notebook: default
+---
+
+
+
+
+```r
+# Translate QDX test code to GHI
+QDX_GHI_Test_Code <- data.table(QDX_Code = c('GL','GLD','GLC','MMR','GLP','LIQSEL','UNK'),
+                                GHI_Code = c('IBC','DCIS','Colon','MMR','Prostate','LIQSEL','Unknown'))
+```
+
+** GET TEST CLAIM TICKET DATA FROM QUADAX **
+
+Get the Test Claim data from Quadax stdClaim.txt. The data is loaded every night into ODSProd01.
+The sql select claim of date of service since 2015-10-01
+
+
+```r
+# read the raw data from ODSProd01
+getQDXClaim <- function (usage, folder, refresh = 0) {
+    
+    target <- "ODSProd01_Quadax_QDX_stdClaimFile.txt"
+    
+    print(paste('stdClaim : reading Claim Data ',Sys.time(), sep = " "))
+    if (refresh == 1) {
+        con <-odbcDriverConnect(connection = "Driver={ODBC Driver 13 for SQL Server};trusted_connection=yes;
+                               server=ODSProd01;
+                               database=Quadax")
+        #a <- trimws(readr::read_lines("./data/QDX_stdClaim.sql"))
+        #sql <- paste(trimws(readr::read_lines("./data/QDX_stdClaim.sql")), collapse="\n")
+        sql <- paste(trimws(readr::read_lines(paste(sql_folder, "QDX_stdClaim.sql",sep=""))), collapse="\n")
+        Claim <- sqlQuery(con, sql, stringsAsFactors = FALSE)
+        write.table(Claim,paste(folder,target,sep=""), sep="|",row.names=FALSE)
+        odbcClose(con)
+    } else {
+        Claim <- read.table(paste(folder,target,sep=""), sep="|", header=TRUE, stringsAsFactors = FALSE)
+    }
+
+    print(paste('stdClaim : cleaning Claim Data ',Sys.time(), sep = " "))
+    
+    prep_file_name <- "QDX_ClaimDataPrep.xlsx"
+    claim_note <- read.xlsx(paste(prep_file_path, prep_file_name, sep=""), sheetName ="QDXClaim", startRow=2,
+                            colIndex=c(2,3:6),stringsAsFactors=FALSE)
+
+    # rename columns
+    rename_col <- match(claim_note$QDX_stdClaimFile,names(Claim))
+    names(Claim)[na.omit(rename_col)] <- claim_note$Synonyms[which(!is.na(rename_col))]
+
+    
+    # Translate QDX test code to GHI
+    #QDX_GHI_Test_Code <- data.table(QDX_Code = c('GL','GLD','GLC','MMR','GLP','LIQSEL','UNK'),
+    #                                GHI_Code = c('IBC','DCIS','Colon','MMR','Prostate','LIQSEL','Unknown'))
+    
+    for (i in seq_along(QDX_GHI_Test_Code$QDX_Code)) {
+        #print (QDX_GHI_Test_Code$QDX_Code[i])
+        a <- which(Claim$Test == QDX_GHI_Test_Code$QDX_Code[i])
+        Claim[a,'Test'] <- QDX_GHI_Test_Code$GHI_Code[i]
+    }
+    # table(Claim$Test)
+    #a <- Claim %>%
+    #       filter(Test=='GLP') %>%
+    #       select(ReRoutedPrimaryInsPlan_GHICode, PrimaryInsPlanName)
+    #       View(a)
+    
+    # Convert the dates
+    Claim$TXNDate <- ymd(Claim$TXNDate)
+    Claim$OLIDOS <- ymd(Claim$OLIDOS)
+    
+    Claim$TicketNumber <- as.character(Claim$TicketNumber)
+    Claim$CaseNumber <- as.character(Claim$CaseNumber)
+    
+    # set the TXNLineNumber and TXNType for TXNDetail Report
+    Claim <- Claim %>%
+             mutate(TXNLineNumber = 0, TXNType='CL')
+    
+    
+    # find the Payor/plan that the Claim Ticket is issued to
+    # the value should come from the ReReoutedPayor. If ReReoutedPayor is blank, take from the PrimaryPayor
+    QDX_Tick_Payor_map <- data.table(Ticket_payor = c('TicketInsComp_QDXCode',
+                                                       'TicketInsPlan_QDXCode',
+                                                       'TicketInsCompName',
+                                                       'TicketInsPlanName',
+                                                       'TicketInsFC',
+                                                       'TicketInsComp_GHICode',
+                                                       'TicketInsPlan_GHICode'),
+                                     ReRoutePrimary = c('ReRoutedPrimaryInsComp_QDXCode',
+                                                        'ReRoutedPrimaryInsPlan_QDXCode',
+                                                        'ReRoutedPrimaryInsCompName',
+                                                        'ReRoutedPrimaryInsPlanName',
+                                                        'ReRoutedPrimaryInsFC',
+                                                        'ReRoutedPrimaryInsComp_GHICode',
+                                                        'ReRoutedPrimaryInsPlan_GHICode'),
+                                        PrimaryIns = c('PrimaryInsComp_QDXCode',
+                                                       'PrimaryInsPlan_QDXCode',
+                                                       'PrimaryInsCompName',
+                                                       'PrimaryInsPlanName',
+                                                       'PrimaryInsFC',
+                                                       'PrimaryInsComp_GHICode',
+                                                       'PrimaryInsPlan_GHICode')
+                                    )
+    
+    a <- which(is.na(Claim$ReRoutedPrimaryInsPlan_QDXCode))
+    b <- which(!is.na(Claim$ReRoutedPrimaryInsPlan_QDXCode))
+    for (i in seq_along(QDX_Tick_Payor_map$Ticket_payor)) {
+        #print (paste(i, " : ", QDX_Tick_Payor_Source$Ticket_payor[i],
+        #             " : ",QDX_Tick_Payor_Source$PrimaryIns[i],
+        #             " : ",QDX_Tick_Payor_Source$ReRoutePrimary[i], sep=""))
+        Claim[a,QDX_Tick_Payor_map$Ticket_payor[i]] <- Claim[a,QDX_Tick_Payor_map$PrimaryIns[i]]
+        Claim[b,QDX_Tick_Payor_map$Ticket_payor[i]] <- Claim[b,QDX_Tick_Payor_map$ReRoutePrimary[i]]
+    }
+    
+    print(paste('stdClaim : output Claim Data based on usage ', usage ,Sys.time(), sep = " "))
+    
+    if (usage == 'Claim2Rev') {
+        select_columns <- claim_note[which(claim_note$Claim2Rev==1),'Synonyms']
+    } else if (usage == 'ClaimTicket'){
+        select_columns <- claim_note[which(claim_note$ClaimTicket==1),'Synonyms']
+    }
+    Claim <- select(Claim, select_columns)
+    return(Claim)
+}
+```
+
+
+** GET CLAIM TICKET TRANSACTION DATA FROM QUADAX **
+These are the payment, adjustment, refund, charge error adjustment, etc data
+Quadax provides a refresh of the stdPayment data. The data is loaded into ODSProd01 everyday.
+
+
+```r
+getQDXPayment <- function (usage, folder, refresh = 0){
+    
+    target <- "ODSProd01_Quadax_QDX_stdPayment.txt"
+    
+    print(paste('stdPayment : reading Payment Data ',Sys.time(), sep = " "))
+    if (refresh == 1) {
+        con <-odbcDriverConnect(connection = "Driver={ODBC Driver 13 for SQL Server};trusted_connection=yes;
+                               server=ODSProd01;
+                               database=Quadax")
+        #a <- trimws(readr::read_lines("./data/QDX_stdClaim.sql"))
+        #sql <- paste(trimws(readr::read_lines("./data/QDX_stdPayment.sql")), collapse="\n")
+        sql <- paste(trimws(readr::read_lines(paste(sql_folder, "QDX_stdPayment.sql", sep=""))), collapse="\n")
+        Pymnt <- sqlQuery(con, sql, stringsAsFactors = FALSE)
+        write.table(Pymnt,paste(folder,target,sep=""), sep="|",row.names=FALSE)
+        odbcClose(con)
+    } else {
+        Pymnt <- read.table(paste(folder,target,sep=""), sep="|", header=TRUE, stringsAsFactors = FALSE)
+    }
+
+    prep_file_name <- "QDX_ClaimDataPrep.xlsx"
+    pymnt_note <- read.xlsx(paste(prep_file_path, prep_file_name, sep=""), sheetName ="QDXPayment", startRow=2,
+                            colIndex=c(2,3:8),stringsAsFactors=FALSE)
+
+    # rename columns
+    rename_col <- match(pymnt_note$QDX_stdPaymentFile,names(Pymnt))
+    names(Pymnt)[na.omit(rename_col)] <- pymnt_note$Synonyms[which(!is.na(rename_col))]
+
+    print(paste('stdPayment : cleaning and transforming Payment Data ',Sys.time(), sep = " "))
+    
+    # Convert the dates
+    Pymnt$TXNDate <- ymd(Pymnt$TXNDate)
+    Pymnt$OLIDOS <- ymd(Pymnt$OLIDOS)
+    
+    Pymnt$TicketNumber <- as.character(Pymnt$TicketNumber)
+    Pymnt$CaseNumber <- as.character(Pymnt$CaseNumber)
+
+    # Translate QDX test code to GHI
+    #QDX_GHI_Test_Code <- data.table(QDX_Code = c('GL','GLD','GLC','MMR','GLP','LIQSEL','UNK'),
+    #                                GHI_Code = c('IBC','DCIS','Colon','MMR','Prostate','LIQSEL','Unknown'))
+    
+    for (i in seq_along(QDX_GHI_Test_Code$QDX_Code)) {
+        #print (QDX_GHI_Test_Code$QDX_Code[i])
+        a <- which(Pymnt$Test == QDX_GHI_Test_Code$QDX_Code[i])
+        Pymnt[a,'Test'] <- QDX_GHI_Test_Code$GHI_Code[i]
+    }
+    
+    # Remove Allowable, Deductible and Coinsurance from Adjustment Lines
+    a <- which(Pymnt$TXNType %in% c('AC','AD'))
+#    Pymnt[a,c('stdPymntAllowedAmt','stdPymntDeductibleAmt','stdPymntCoinsAmt')]<-NA
+    
+    # Populate the PymntInsPlan_QDXCode field with QDXAdjustmentCode field for Payment Transaction (ie TXNType = RP, RI)
+    a <- which(Pymnt$TXNType %in% c('RI','RP'))
+    Pymnt[a,'PymntInsPlan_QDXCode'] <- Pymnt[a,'QDXAdjustmentCode']
+    Pymnt[a,'QDXAdjustmentCode'] <- NA
+    Pymnt[a,'GHIAdjustmentCode'] <- NA
+   
+    QDX_Tick_Payor_map <- data.table(Ticket_payor = c('TicketInsComp_QDXCode',
+                                                      # 'TicketInsPlan_QDXCode',
+                                                      # 'TicketInsCompName',
+                                                      # 'TicketInsPlanName',
+                                                      # 'TicketInsFC',
+                                                       'TicketInsComp_GHICode',
+                                                       'TicketInsPlan_GHICode'),
+                                         PrimaryIns = c('PrimaryInsComp_QDXCode',
+                                                       #'PrimaryInsPlan_QDXCode',
+                                                       #'PrimaryInsCompName',
+                                                       #'PrimaryInsPlanName',
+                                                       #'PrimaryInsFC',
+                                                       'PrimaryInsComp_GHICode',
+                                                       'PrimaryInsPlan_GHICode')
+                                    )
+    a <- which(is.na(Pymnt$TicketInsPlan_QDXCode))
+    for (i in seq_along(QDX_Tick_Payor_map$Ticket_payor)) {
+        Pymnt[a,QDX_Tick_Payor_map$Ticket_payor[i]] <- Pymnt[a,QDX_Tick_Payor_map$PrimaryIns[i]]
+    }
+    
+    # update an old GHI adjustment code for PRAC to GH01, Financial Assistance Adj for Financial Assistance
+    a <- which(Pymnt$QDXAdjustmentCode=='PRAC' & Pymnt$GHIAdjustmentCode != 'GH07')
+    Pymnt[a,'GHIAdjustmentCode'] <- 'GH07'
+ 
+    # Resolve the adjusment code
+    ## ************************
+    AdjustmentCode <- read.xlsx(paste(prep_file_path, prep_file_name, sep=""), sheetName ="AdjustmentCode", header=TRUE, startRow=1,
+                            colIndex=c(1,3,5,7),stringsAsFactors=FALSE)
+    #temp <- merge(Pymnt, AdjustmentCode, all.x=TRUE, by.x="QDXAdjustmentCode", by.y = "Code")  ## merge not working
+    Pymnt <- left_join(Pymnt, AdjustmentCode, by = c('QDXAdjustmentCode' = 'Code'))
+    
+    
+    print(paste('stdPayment : select & return Payment Data ',Sys.time(), sep = " "))
+
+    if (usage == 'Claim2Rev') {
+        select_columns <- pymnt_note[which(pymnt_note$Claim2Rev==1),'Synonyms']
+    } else if (usage == 'ClaimTicket'){
+        select_columns <- pymnt_note[which(pymnt_note$ClaimTicket==1),'Synonyms']
+    }
+    Pymnt <- select(Pymnt, select_columns)
+    return(Pymnt)
+}
+```
+
+** GET CLAIM CASE STATUS FROM QUADAX **
+Quadax provides the billing case status in the stdCases.txt.
+
+
+```r
+getQDXCases <- function (usage, folder, refresh = 0){
+    
+    target <- "ODSProd01_Quadax_QDX_claim_case_status.txt"
+    
+    print(paste('stdCases : reading Claim Cases status data ',Sys.time(), sep = " "))
+    if (refresh == 1) {
+        con <-odbcDriverConnect(connection = "Driver={ODBC Driver 13 for SQL Server};trusted_connection=yes;
+                               server=ODSProd01;
+                               database=Quadax")
+        #a <- trimws(readr::read_lines("./data/QDX_stdClaim.sql"))
+        #sql <- paste(trimws(readr::read_lines("./data/QDX_stdCases.sql")), collapse="\n")
+        sql <- paste(trimws(readr::read_lines(paste(sql_folder, "QDX_Cases.sql",sep=""))), collapse="\n")
+        Cases <- sqlQuery(con, sql, stringsAsFactors = FALSE)
+        write.table(Cases,paste(folder,target,sep=""), sep="|",row.names=FALSE)
+        odbcClose(con)
+    } else {
+        Cases <- read.table(paste(folder,target,sep=""), sep="|", header=TRUE, stringsAsFactors = FALSE)
+    }
+    
+    Cases$caseUpdateDate <- ymd(Cases$caseUpdateDate)
+    # adding '01' to workaround the need for date
+    Cases$caseEntryYrMth <- as.Date(paste(Cases$caseEntryYrMth,'01',sep=""), format='%Y%m%d')
+    Cases$caseTicketNum <- as.character(Cases$caseTicketNum)
+    Cases$caseCaseNum <- as.character(Cases$caseCaseNum)
+    Cases$caseAddedDateTime <- paste(Cases$caseDateAdded, " ", Cases$caseTimeAdded)
+    Cases$caseAddedDateTime <-ymd_hms(Cases$caseAddedDateTime)
+    
+    
+    prep_file_name <- "QDX_ClaimDataPrep.xlsx"
+    case_note <- read.xlsx(paste(prep_file_path, prep_file_name, sep=""), sheetName ="QDXCases", startRow=2,
+                            colIndex=c(2,6:9),stringsAsFactors=FALSE)
+    
+    if (usage == 'case_reference') {
+        select_columns <- case_note[which(case_note$case_reference==1),'Synonyms']
+    } else if (usage == 'QDXClaim_CaseStatus') {
+        select_columns <- case_note[which(case_note$QDXClaim_CaseStatus==1),'Synonyms']
+    }
+    return(Cases[,select_columns])
+}
+```
+
+
+** Get Payor and Insurance Plan code and detail mapping from QDX **
+
+
+```r
+getQDXInsPlans <- function(folder, refresh=0) {
+    
+    target <- "ODSProd01_Quadax_QDX_insCodes.txt"
+    
+    if (refresh == 1) {
+        
+        con <-odbcDriverConnect(connection = "Driver={ODBC Driver 13 for SQL Server};trusted_connection=yes;
+                               server=ODSProd01;
+                               database=Quadax")
+        ##change Mar 20
+        #sql <- paste(trimws(readr::read_lines(paste(sql_folder, "QDX_insCodes.sql",sep=""))), collapse="\n")
+        sql <- paste(trimws(readr::read_lines(paste(sql_folder, "QDX_insPlans.sql",sep=""))), collapse="\n")
+        
+        QDXinsPlansCode <- sqlQuery(con, sql, stringsAsFactors = FALSE)
+        write.table(QDXinsPlansCode,paste(folder,target,sep=""), sep="|",row.names=FALSE)
+        odbcClose(con)
+    } else {
+        QDXinsPlansCode <- read.table(paste(folder,target,sep=""), sep="|", header=TRUE, stringsAsFactors = FALSE)
+    }    
+
+    QDXinsPlansCode <- QDXinsPlansCode %>%
+             group_by(insPlanCode) %>%
+             count(insPlanCode) %>%
+             left_join(QDXinsPlansCode,.,by = c('insPlanCode'))
+             
+    setnames(QDXinsPlansCode,'n','row_cnt')
+
+    # There are duplicate insPlanCode in the Quadax Master File.
+    QDXinsPlansCode <- QDXinsPlansCode %>%
+                      group_by(insPlanCode) %>%
+                      slice(1)
+
+        
+    return(QDXinsPlansCode)
+}
+```
+
+** Get prior authorization cases data
+priorAuthCase 
+in the virtualSelfDescInfo, line 2850 contains a special character
+PL|VO|Volapk|||
+
+
+
+```r
+getQDXPA <- function(folder, refresh=0) {
+    
+    target <- "ODSProd01_Quadax_QDX_priorAuth.txt"
+    
+    if (refresh == 1) {
+        con <-odbcDriverConnect(connection = "Driver={ODBC Driver 13 for SQL Server};trusted_connection=yes;
+                               server=ODSProd01;
+                               database=Quadax")
+        #a <- trimws(readr::read_lines("./data/QDX_stdClaim.sql"))
+        #sql <- paste(trimws(readr::read_lines("./data/QDX_stdCases.sql")), collapse="\n")
+        sql <- paste(trimws(readr::read_lines(paste(sql_folder, "QDX_priorAuth.sql",sep=""))), collapse="\n")
+        priorAuth <- sqlQuery(con, sql, stringsAsFactors = FALSE)
+        write.table(priorAuth,paste(folder,target,sep=""), sep="|",row.names=FALSE)
+        odbcClose(con)
+    } else {
+        priorAuth <- read.table(paste(folder,target,sep=""), sep="|", header=TRUE, stringsAsFactors = FALSE)
+    }
+    
+    #QDX_PA <- read.csv(file.path(folder, 'priorAuth.txt', sep=""), header=T, sep="|", stringsAsFactors = F)
+    
+    priorAuth$priorAuthDate <- ymd(priorAuth$priorAuthDate)
+    priorAuth$priorAuthEnteredDt <- ymd(priorAuth$priorAuthEnteredDt)
+    
+    priorAuth$priorAuthCaseNum <- as.character(priorAuth$priorAuthCaseNum)
+
+    # take PA case entered after 2010 to avoid the null priorAuthStatus
+    # there are PA cases with null priorAuthEnteredDate and null priorAuthStatus. These could be cases don't need priorAuth
+    priorAuth <- priorAuth %>%
+              dplyr::filter(priorAuthEnteredDt > "2010-01-01")
+
+    priorAuth <-priorAuth %>%
+            select(priorAuthCaseNum, priorAuthNumber, priorAuthDate, priorAuthEnteredDt, priorAuthEnteredTime,
+                   priorAuthResult, priorAuthResult_Category, priorAuthReqDesc)
+    
+    return(priorAuth)
+}
+```
+** Get Quadax appeal status **
+Quadax writes the appeal status in appeal.txt
+The file has all the appeal cases created GHI claims.
+There are multiple rows for appeal cases processed through multiple levels.
+Appeal case status updates is overwritten everytime there is an update.
+
+A OLI can have multiple appeal cases, and each case can have multiple levels.
+
+This function returns 3 views of appeal status
+a) the appeal status table as given by Quadax
+b) the appeal status wide format. span out the appeal level
+c) the latest appeal level & detail per appeal case
+
+
+```r
+getAppeals <- function(folder, refresh = 0) {
+
+    target <- "ODSProd01_Quadax_QDX_appeal.txt"
+
+    if (refresh == 1) {
+        con <-odbcDriverConnect(connection = "Driver={ODBC Driver 13 for SQL Server};trusted_connection=yes;
+                               server=ODSProd01;
+                               database=Quadax")
+        sql <- paste(trimws(readr::read_lines(paste(sql_folder, "QDX_appeal.sql",sep=""))), collapse="\n")
+        appeal_status <- sqlQuery(con, sql, stringsAsFactors = FALSE)
+        write.table(appeal_status,paste(folder,target,sep=""), sep="|",row.names=FALSE)
+        odbcClose(con)
+    } else {
+        appeal_status <- read.table(paste(folder,target,sep=""), sep="|", header=TRUE, stringsAsFactors = FALSE)
+    }
+
+    appeal_status$appealCaseNumber <- as.character(appeal_status$appealCaseNumber)
+    
+    # cast the appeal_status from long to wide format
+    wide_Status <- dcast(appeal_status, appealCaseNumber~appealLvlCode, value.var=c("appealStatus"), fun=first)
+    wide_status_desc <- dcast(appeal_status, appealCaseNumber~appealLvlCode, value.var=c("appealStatusDesc"), fun=first)
+    wide_DenialDt <- dcast(appeal_status, appealCaseNumber~appealLvlCode, value.var=c("appealDenialLetterDt"), fun=first)
+    wide_InsCode <- dcast(appeal_status, appealCaseNumber~appealLvlCode, value.var=c("appealInsCode"), fun=first)
+    wide_EntryDt <- dcast(appeal_status, appealCaseNumber~appealLvlCode, value.var=c("appealEntryDt"), fun=first)
+    wide_DenReason <- dcast(appeal_status, appealCaseNumber~appealLvlCode, value.var=c("appealDenReasonDesc"), fun=first)
+
+    temp = c("_Status", "_DenialDt", "_InsCode","_EntryDt","_DenReason")
+    for (i in seq_along(temp)) {
+        temp_tlb <- paste("wide",temp[i],sep="")
+        temp_col <- paste(names(get(temp_tlb))[2:length(names(get(temp_tlb)))],temp[i],sep="")
+        setnames(get(temp_tlb),names(get(temp_tlb))[2:length(names(get(temp_tlb)))], temp_col)
+    }
+
+    appeal_status_wide <- list(wide_status_desc, wide_Status, wide_DenialDt, wide_InsCode, wide_EntryDt, wide_DenReason) %>%
+                          Reduce(function(dtf1,dtf2) full_join(dtf1,dtf2), .)
+
+    rm(list = ls()[grep("^wide_*", ls())])
+
+    # determine the latest appeal level using Denial Letter Date
+    last_appealLvl <- appeal_status %>%
+                      group_by(appealCaseNumber) %>%
+                      slice(which.max(appealDenialLetterDt)) %>%
+                      select(appealCaseNumber,appealDenialLetterDt,appealEntryDt,
+                             appealLvl, appealLvlCode, appealLvlDesc,
+                             appealStatus, appealStatusDesc,
+                             appealInsCode,
+                             appealDenReason, appealDenReasonDesc)
+
+    
+    last_appealLvl <- setnames(last_appealLvl, c('appealCaseNumber', 'lastDenialLetterDt', 'lastappealEntryDt',
+                                                     'lastappealLvlCode', 'LastAppealLevel', 'lastappealLvlDesc',
+                                                     'lastappealStatusCode', 'lastappealStatus',
+                                                     'lastappealInsCode',
+                                                     'appealDenReasonCode', 'appealDenReasonDesc'))
+
+    
+    appeal_status$appealEntryDt <- ymd(appeal_status$appealEntryDt)
+    appeal_status$appealDenialLetterDt <- ymd(appeal_status$appealDenialLetterDt)
+    
+    return(list(appeal_status,appeal_status_wide,last_appealLvl))
+}
+```
+
+** Get Quadax appeal success information **
+Everynight, Quadax extracts and summarizes information on completed appeals into the appealSuccess.txt
+This file has completed appeals of OLI DOS since 2016-01-01.
+
+
+```r
+getAppealSuccess <- function(folder, refresh = 0) {
+
+    target <- "ODSProd01_Quadax_QDX_complete_appeal_case.txt"
+
+    if (refresh == 1) {
+        con <-odbcDriverConnect(connection = "Driver={ODBC Driver 13 for SQL Server};trusted_connection=yes;
+                               server=ODSProd01;
+                               database=Quadax")
+        sql <- paste(trimws(readr::read_lines(paste(sql_folder, "QDX_appealSuccess.sql",sep=""))), collapse="\n")
+        complete_appeals <- sqlQuery(con, sql, stringsAsFactors = FALSE)
+        write.table(complete_appeals,paste(folder,target,sep=""), sep="|",row.names=FALSE)
+        odbcClose(con)
+    } else {
+        complete_appeals <- read.table(paste(folder,target,sep=""), sep="|", header=TRUE, stringsAsFactors = FALSE)
+    }
+    
+    for (i in seq_along(QDX_GHI_Test_Code$QDX_Code)) {
+        a <- which(complete_appeals$appealPH == QDX_GHI_Test_Code$QDX_Code[i])
+        complete_appeals[a,'appealPH'] <- QDX_GHI_Test_Code$GHI_Code[i]
+    }
+
+    complete_appeals$appealTickNum <- as.character(complete_appeals$appealTickNum)
+    complete_appeals$appealCaseNum <- as.character(complete_appeals$appealCaseNum)
+
+    complete_appeals$appealRptDt <- ymd(complete_appeals$appealRptDt)
+    complete_appeals$appealDOS <- ymd(complete_appeals$appealDOS)
+    
+    complete_appeals$appealAmtAplRec <- complete_appeals$appealAmtAplRec*-1
+    #complete_appeals$appealAmtClmRec <- complete_appeals$appealAmtClmRec*-1
+    
+    return(complete_appeals)
+}
+```
+

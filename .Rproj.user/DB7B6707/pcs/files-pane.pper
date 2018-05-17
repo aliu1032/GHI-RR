@@ -1,0 +1,13 @@
+{
+    "path" : "C:/Users/April/Documents/workspace/GHS-BR-R/GHI-RR/data",
+    "sortOrder" : [
+        {
+            "ascending" : true,
+            "columnIndex" : 2
+        },
+        {
+            "ascending" : false,
+            "columnIndex" : 4
+        }
+    ]
+}

@@ -1,0 +1,4 @@
+"0"," output_ReadTable2 <- read.table(paste(folder,target,sep=""""), sep=""|"", header=TRUE, stringsAsFactors = FALSE, fill=TRUE, quote="""")
+"
+"2","Error in paste(folder, target, sep = """") : object 'folder' not found
+"

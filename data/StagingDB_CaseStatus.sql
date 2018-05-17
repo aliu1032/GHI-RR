@@ -1,0 +1,2 @@
+Select CaseStatusCode, CaseStatusDescription, SummaryLevel1, SummaryLevel2
+from dbo.tblQuadaxCaseStatusMasterDaily

@@ -1,0 +1,8 @@
+"0","QDX_PA_Case <- getQDXPA(DB_source_data, refresh)"
+"0","select_col <- c('priorAuthCaseNum','priorAuthDate','priorAuthEnteredDt','priorAuthEnteredTime',"
+"0","                'priorAuthResult', 'priorAuthResult_Category','priorAuthReqDesc')"
+"0","Claim2Rev <- left_join(Claim2Rev, QDX_PA_Case[,select_col], by=c('QDXCaseNumber' = 'priorAuthCaseNum'))"
+"0","# add a PA_Category with 'Not Requested' to flag those OLIs which PA is not requested."
+"0","Claim2Rev$QDX_priorAuthResult_Category <- Claim2Rev$priorAuthResult_Category"
+"0","a <- is.na(Claim2Rev$priorAuthResult_Category)"
+"0","Claim2Rev[which(a),'priorAuthResult_Category'] <- ""Not Requested"""

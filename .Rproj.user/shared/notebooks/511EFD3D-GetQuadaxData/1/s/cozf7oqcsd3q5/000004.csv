@@ -1,0 +1,6 @@
+"0","        sql <- paste(trimws(readr::read_lines(paste(sql_folder, ""QDX_priorAuth.sql"",sep=""""))), collapse=""\n"")
+        priorAuth <- sqlQuery(con, sql, stringsAsFactors = FALSE)
+"
+"2","Error in sqlQuery(con, sql, stringsAsFactors = FALSE) : 
+  first argument is not an open RODBC channel
+"

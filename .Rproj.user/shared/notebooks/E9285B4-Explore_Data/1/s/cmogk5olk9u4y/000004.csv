@@ -1,0 +1,4 @@
+"0","    Cases_temp <- left_join(Cases_temp, by='caseAccession')
+"
+"2","Error in tbl_vars(y) : argument ""y"" is missing, with no default
+"

@@ -1,0 +1,148 @@
+---
+title: "Data exploration"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## R Markdown
+
+** explore QDX_PA **
+
+priorAuthCaseNum is associated with 1 or none priorAuthTicketNumber.
+e.g. Case is open pre claim Prior Authorization process before a claim ticket is issue.
+Each caseNum has only 1 priorAuthReq type.
+
+There are rows with empty priorAuthStatus. These cases either 
+1. have no priorAuthStatus requirement, and the priorAuthEnteredDate is null; or 
+2. the AuthEnteredDate are between 20050919 to 20091027, remove these rows with priorAuthEnteredDate < 2010 from the dataset
+
+All case entered after 2016 have priorAuthStatus
+```{r QDX PA}
+
+    QDX_PA <- read.csv(file.path(QDX_zip_data, 'priorAuth.txt', sep=""), header=T, sep="|", stringsAsFactors = F)
+
+    # check priorAuthCaseNum : priorAuthTicketNum
+    temp <- QDX_PA %>%
+            group_by(priorAuthCaseNum, priorAuthTicketNum) %>%
+            summarize(TickCnt = n_distinct(priorAuthTicketNum))
+    sum(temp$TickCnt>1)
+
+    # check priorAuthTicketNum : priorAuthReq
+    temp <- QDX_PA %>%
+            group_by(priorAuthTicketNum) %>%
+            summarize(PA_Req_cnt = n_distinct(priorAuthReq))
+    a <- which(temp$PA_Req_cnt>1)
+    
+    temp <- QDX_PA %>%
+            group_by(priorAuthCaseNum) %>%
+            summarize(PA_Req_cnt = n_distinct(priorAuthReq))
+    a <- which(temp$PA_Req_cnt>1)
+    
+    # row 279054, PT001003149 , ticketNum = 788364 , caseNum=985289, is the priorAuthNumber = '1706|AAAPF' which has the pipe character in it?
+    
+    a <- filter(QDX_PA, QDX_PA$priorAuthStatus == "")
+    nrow(a)
+    range(a$priorAuthEnteredDt)
+```
+
+
+** explore QDX Cases **
+finding the QDX Cases - OLI - Ticket entity relationship
+
+```{r}
+
+    Cases <- getQDXCases('QDXClaim_CaseStatus', DB_source_data, 0)
+    
+    temp <- Cases %>%
+            group_by(caseAccession) %>%
+            summarize(QDX_Case_cnt = n_distinct(caseCaseNum))
+    
+    a <- temp[which(temp$QDX_Case_cnt > 1), 'caseAccession']
+    
+#    b <- Cases[a,c('caseAccession','caseEntryYrMth')]
+    b <- Cases %>%
+         dplyr::filter(caseAccession %in% a$caseAccession) %>%
+         arrange(caseAccession) %>%
+         dplyr::filter(caseAccession != 'NONE')
+
+    
+    Cases_temp <- left_join(Cases,temp, by='caseAccession')
+
+    temp <- Cases %>%
+            group_by(caseAccession) %>%
+            summarize(QDX_Tick_cnt = n_distinct(caseTicketNum))
+
+    Cases_temp <- left_join(Cases_temp, temp, by='caseAccession')
+    
+    target = 'QDX_M_Cases_OLI.xlsx'
+    write.xlsx(b, file = paste(output_folder,target,sep=""), row.names=FALSE, col.names=TRUE, showNA=FALSE)
+
+```
+
+** Explore GHI SFDC PreBilling Cases **
+
+```{r}
+
+target <- 'GHI_SFDC_PreBillingCases.txt'
+con <-odbcDriverConnect(connection = "Driver={ODBC Driver 13 for SQL Server};trusted_connection=yes;
+                       server=EDWStage;
+                       database=StagingDB")
+sql <- paste(trimws(readr::read_lines(paste(sql_folder, "StagingDB_SFDC_PreBillingCases.sql",sep=""))), collapse="\n")
+output <- sqlQuery(con, sql, stringsAsFactors = FALSE)
+write.table(output, paste(folder, target, sep=""), row.names=FALSE, sep="|")
+odbcClose(con)
+
+
+    temp <- output %>%
+            group_by(OSM_Order_Line_Item_ID__c) %>%
+            summarize(PreBilling_Case_cnt = n_distinct(CaseNumber))
+    
+    a <- temp[which(temp$PreBilling_Case_cnt > 1), 'OSM_Order_Line_Item_ID__c']
+    
+    temp2 <- output[output$OSM_Order_Line_Item_ID__c %in% a$OSM_Order_Line_Item_ID__c,]
+
+```
+
+
+## Including Plots
+
+You can also embed plots, for example:
+
+```{r pressure, echo=FALSE}
+plot(pressure)
+```
+
+Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+
+
+## 
+Read the SFDC Plan
+
+```{r SFDC Plans}
+
+GHI_Payor_Current <- getGHIPayorMaster(output_folder, 1)
+
+temp <- GHI_Payor_Current %>%
+        group_by(QDX_Ins_Plan_Code) %>%
+        count(QDX_Ins_Plan_Code)
+
+
+print (paste("Number of QDX plans map to mutliple GHI Plans : ", nrow(temp[temp$n>1,]), sep=""))
+```
+
+## read the Plans provided by Quadax via FTP nightly feed
+
+
+```{r pressure, echo=FALSE}
+QDX_insPlans <- getQDXInsPlans(output_folder, refresh=1)
+    
+
+tempM <- left_join(QDX_insPlans, GHI_Payor_Current, by = c("insPlanCode" = "QDX_Ins_Plan_Code"))
+temp2 <-tempM[is.na(tempM$Tier4Payor),]
+
+print(paste (nrow(tempM[is.na(tempM$Tier4Payor),])," of QDX plans do not have a GHI Plan record in SFDC ",  sep=""))
+```
+

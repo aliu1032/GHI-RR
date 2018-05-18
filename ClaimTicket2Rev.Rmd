@@ -1,0 +1,351 @@
+---
+title: "ClaimTicket2Rev"
+output: html_notebook
+---
+
+ClaimTicket2Rev produces 2 files:
+1. ClaimTicket2Rev.txt
+2. ClaimTicket_TXN.txt
+
+
+
+```{r}
+refresh = 0
+
+## for Claim Ticket, amounts are reported per OLIID + Ticket Number
+grp_var <- c('OLIID','TicketNumber')
+```
+
+
+** Read Order Line Detail data **
+
+Getting OLI Payor, Test, Test Delivered Date data from OLIDetail
+
+
+```{r Read GHI Order Line Detail Data}
+
+#OLIDetail_TICK <- getOLIDetail('ClaimTicket', DB_source_data, refresh)
+#OLIDetail_TICK <- getOLIDetail('ClaimTicket', DB_source_data, refresh)
+OLIDetail <- getOLIDetail('ClaimTicket', DB_source_data, refresh)
+##something wrong with reading the local file
+## reading from Database: 373260 obs.
+## reading from text: 356415 obs.
+
+OLI_info <- OLIDetail %>%
+            select(OLIID, Test, TestDeliveredDate, OrderStartDate,
+                   CurrentTicketNumber,
+                   TerritoryRegion, OrderingHCPState
+                   )
+
+CurrTicket_payor <- OLIDetail %>%
+            select(OLIID, 
+#                   Test, TestDeliveredDate, OrderStartDate,CurrentTicketNumber,
+                   Tier1Payor, Tier1PayorName,Tier1PayorID,
+                   Tier2Payor, Tier2PayorName, Tier2PayorID,
+                   Tier4Payor, Tier4PayorName, Tier4PayorID,
+                   FinancialCategory, QDXInsPlanCode
+#                   , TerritoryRegion, OrderingHCPState
+                  )
+
+```
+
+### Get the Test revenue from EDWDB.fctRevenue table
+
+```{r Read GHI Revenue Data}
+
+Revenue <- getGHIRevenue('ClaimTicket',DB_source_data, refresh)
+
+    # exploration
+    a <- c(grep("^(?i)([^(OL)])",Revenue$OLIID), grep('^OL([^0-9])',Revenue$OLIID))
+    sprintf("%d rows have null Order Line Item Id", sum(is.na(Revenue$OLIID)))
+    sprintf("and %d rows have unconventional Order Line Item Id i.e. OLnnn format", length(a))
+
+    a <- grep('^9+', Revenue$TicketNumber)    
+    sprintf("%d rows have null Ticket Number", sum(is.na(Revenue$TicketNumber)))
+    sprintf("however, %d rows have (-1) or (999999) Ticket Number", sum(sum(Revenue$TicketNumber=='-1'),length(a)))
+    
+Revenue[(which(is.na(Revenue$OLIID))),'OLIID'] <- "Unknown"
+
+```
+
+** get Test claim data **
+Get the Test Claim data from Quadax stdClaim.txt. The data is loaded every night into ODSProd01.
+The sql select claim of date of service since 2015-10-01
+
+```{r Read QDX Claim, Payment & Case Data}
+Claim <- getQDXClaim('ClaimTicket',DB_source_data,refresh)
+Pymnt <- getQDXPayment('ClaimTicket',DB_source_data,refresh)
+Cases <- getQDXCases('QDXClaim_CaseStatus', DB_source_data, refresh)
+
+```
+
+** Cleaning the data **
+1. drop the scenario either need checking, and not working for the OLI grain
+   a. Claim without OLI reference
+   b. Payment without OLI reference
+
+2. Remove the top side adjustment from Revenue file.
+   Finance are making some of the top side adjustment to actual OLIs, OLIs that fall into the same payor/country.
+   A flag is utilized in 2016 to call out revenue rows of Revenue adjustment.
+   New process was introduced in 2017, since then the revenue adjustment rows are not flagged.
+
+```{r Clean data}
+
+#Claim_wo_OLI <- Claim[(is.na(Claim$OLIID) | Claim$OLIID=='NONE'),]
+Claim_wo_OLI <- nrow(Claim[(is.na(Claim$OLIID) | Claim$OLIID=='NONE'),])
+print(paste (Claim_wo_OLI, " claim tickets have no OLI reference.", sep=""))
+Claim <- Claim[(!((is.na(Claim$OLIID)) | (Claim$OLIID=='NONE'))),]
+
+#Pymnt_wo_OLI <- Pymnt[(is.na(Pymnt$OLIID) | Pymnt$OLIID=='NONE'),]
+Pymnt_wo_OLI <- nrow(Pymnt[(is.na(Pymnt$OLIID) | Pymnt$OLIID=='NONE'),])
+print(paste (Pymnt_wo_OLI, " Payment ticket transactions have no OLI reference.", sep=""))
+Pymnt <- Pymnt[(!((is.na(Pymnt$OLIID)) | (Pymnt$OLIID=='NONE'))),]
+
+
+Revenue <- Revenue %>%
+           dplyr::filter(Revenue$IsRevenueReconciliationAdjustment == 0)
+
+
+```
+
+** Summarize the Revenue data by OLI + Ticket Number **
+```{r Summarize Revenue}
+print(paste('Claim_Ticket.R : summarize Revenue numbers start',Sys.time(), sep = " "))
+
+Summarize_Revenue_group<-
+    Revenue %>%
+    group_by_(.dots=grp_var) 
+
+
+Summarized_Revenue <- 
+    Summarize_Revenue_group%>%
+    summarize(TotalRevenue = sum(TotalRevenue),
+              TotalAccrualRevenue = sum(TotalAccrualRevenue),
+              TotalCashRevenue = sum(TotalCashRevenue),
+              TotalUSDRevenue = sum(TotalUSDRevenue),
+              TotalUSDAccrualRevenue = sum(TotalUSDAccrualRevenue),
+              TotalUSDCashRevenue = sum(TotalUSDCashRevenue))
+
+OLI_Ticket_Info <-
+Summarize_Revenue_group %>%
+    arrange(AccountingPeriodDate) %>%
+    slice(n()) %>%
+    select(grp_var, Tier1Payor, Tier1PayorName,Tier1PayorID,
+           Tier2Payor, Tier2PayorName, Tier2PayorID,
+           Tier4Payor, Tier4PayorName, Tier4PayorID,
+           FinancialCategory, QDXInsPlanCode)
+
+print(paste('Claim_Ticket.R : summarize Revenue numbers finish',Sys.time(), sep = " "))
+
+```
+
+
+** Summarize the Claim (Charge, Payment, Adjustment, Outstanding) by OLI + Ticket Number **
+Quadax provides claim charge, total amount received per ticket, total amount adjusted per ticket and current ticket balance in the Claim file.
+At all time, per a ticket, the charge amount = sum of (Received amount + adjustment amount + ticket balance)
+
+For GHI Payor Analytics report, we reverse the sign of received amount, adjustment amount. 
+
+```{r Summarize Claim}
+
+print(paste('Claim_Ticket.R : summarize Claim charge and outstanding numbers start',Sys.time(), sep = " "))
+
+temp = c('ClmAmtRec','ClmAmtAdj')
+for (i in seq_along(temp)) {
+    Claim[temp[[i]]] <- Claim[temp[[i]]] *-1
+}
+
+# count the number of tickets issued for an OLI 
+OLI_TickCnt <- Claim %>%
+                 select(OLIID, TicketNumber) %>%
+                 group_by(OLIID) %>%
+                 summarize(TickCnt = n_distinct(TicketNumber)) %>%
+                 ungroup()
+
+## loading plyr mess up the group by in dplyr
+Summarized_Claim <-
+    Claim %>%
+    group_by_(.dots=grp_var) %>%
+    summarize(Charge = sum(TXNAmount),
+#              Payment_amt = sum(ClmAmtRec),
+#              Adjust_amt = sum(ClmAmtAdj),
+              Outstanding = sum(ClmTickBal))
+
+print(paste('Claim_Ticket.R : summarize Claim charge and outstanding numbers finish', Sys.time(), sep = " "))
+
+# nrow(unique(Claim, by = c('OLIID','TicketNumber'))) # not matching - this is from data.table, returning a data.table with duplicated rows removed. This works with Keyed vector..need to read more. 
+# to count # of unique combination 
+# uniqueN(Claim, by = c('OLIID','TicketNumber')) # mactching number
+# nrow(unique(Claim[c('OLIID','TicketNumber')])) # matching number
+```
+
+** Summarize the Payment **
+For Payor Analytics, reverse the sign for all Payment TXNAmount and Adjustment (except Refund) TXNAmount.
+Then summarize the payment and adjustment amounts.
+
+OL000755178, OL000754736,OL000754587 
+multi ticket: OL000613861, OL000739220, OL000740430
+
+```{r}
+print(paste('Claim_Ticket.R : summarize Payment & Adjustment numbers start',Sys.time(), sep = " "))
+
+# flipping the sign of adjustments except Refund
+a <- which((!is.na(Pymnt$GHIAdjustmentCode)) & (Pymnt$GHIAdjustmentCode != 'GH04'))
+Pymnt[a,"TXNAmount"] <- Pymnt[a,"TXNAmount"] * -1
+
+# flip the sign of Payor & Patient payment
+a <- which(Pymnt$TXNType %in% c('RI',"RP"))
+Pymnt[a,"TXNAmount"] <- Pymnt[a,"TXNAmount"] * -1
+
+Summarized_Payor_Pymnt <- Pymnt[Pymnt$TXNType=='RI',] %>%
+                          group_by_(.dots=grp_var) %>%
+                          summarize(PayorPaid = sum(TXNAmount))
+
+Summarized_Patient_Pymnt <- Pymnt[Pymnt$TXNType=='RP',] %>%
+                            group_by_(.dots=grp_var) %>%
+                            summarize(PatientPaid = sum(TXNAmount))
+
+# calculate the total adjustment, excluding charge in error (GH04) and refund & refund reversal (GH09)
+a <- which( Pymnt$TXNType %in% c('AD','AC') &
+            (Pymnt$GHIAdjustmentCode != 'GH04' & Pymnt$GHIAdjustmentCode != 'GH09')
+          )
+Summarized_Adjustment <- Pymnt[a,] %>%
+                         group_by_(.dots=grp_var) %>%
+                         summarize(TotalAdjustment = sum(TXNAmount))
+
+
+# calculate the subTotal per Adjustment group
+a <- which(Pymnt$TXNType %in% c('AD','AC'))
+temp <- melt(Pymnt[a,c(grp_var,'AdjustmentGroup','TXNAmount')], id.vars=c(grp_var,'AdjustmentGroup'))
+## need to check reshape::cast vs reshape2::dcast
+Summarized_Adj_group <- dcast(temp, ...~variable, sum, na.rm=TRUE)
+Summarized_Adj_group <- dcast(Summarized_Adj_group,
+                              paste(paste(grp_var,collapse = "+"),"AdjustmentGroup",sep="~"),
+                              value.var = 'TXNAmount')
+
+rm(temp)
+print(paste('Claim_Ticket.R : summarize Payment & Adjustment numbers finish',Sys.time(), sep = " "))
+```
+
+```{r}
+print(paste('Claim_Ticket.R : join the summarized numbers into ClaimTicket2Rev report start',Sys.time(), sep = " "))
+
+## Genreate a report for each OLI + Ticket Number, the summary of Claim (charge & outstanding), Payment, Adjustment
+ClaimTicket2Rev<-
+list(OLI_info, OLI_TickCnt, OLI_Ticket_Info,
+     Summarized_Revenue,
+     Summarized_Claim,
+     Summarized_Payor_Pymnt,Summarized_Patient_Pymnt,
+     Summarized_Adjustment, Summarized_Adj_group) %>%
+    Reduce(function(dtf1,dtf2) full_join(dtf1,dtf2), .)
+
+
+temp = c('Charge','Charged in Error', 'PayorPaid','PatientPaid', 'Refund & Refund Reversal',
+         "TotalRevenue", "TotalAccrualRevenue", "TotalCashRevenue",
+         "TotalUSDRevenue", "TotalUSDAccrualRevenue", "TotalUSDCashRevenue",
+         "Outstanding",
+         "All other Adjustment", "GHI Adjustment", "Insurance Adjustment", "Revenue Impact Adjustment",
+         "TickCnt")
+for (i in seq_along(temp)) {
+    print(temp[[i]])
+    a <- which(is.na(ClaimTicket2Rev[temp[[i]]]))
+    ClaimTicket2Rev[a, temp[[i]]] <- 0.00
+}
+
+ClaimTicket2Rev <- ClaimTicket2Rev %>%
+                   mutate(TotalPayment = PayorPaid + PatientPaid + `Refund & Refund Reversal`)
+ClaimTicket2Rev <- ClaimTicket2Rev %>%
+                   mutate(TotalBilled = Charge + `Charged in Error`)
+
+### Payor information is null if Revenue Table do not have the ticket/payor information
+
+
+target = 'ClaimTicket2Rev.txt'
+write.table(ClaimTicket2Rev, file = paste(output_folder,target,sep=""), sep="|", row.names=FALSE, col.names=TRUE, na="")
+
+#rm(list = ls()[grep("^Summarize*", ls())])
+
+print(paste('Claim_Ticket.R : join the summarized numbers into ClaimTicket2Rev report finish',Sys.time(), sep = " "))
+
+```
+
+
+**Create a TXN detail jonural entry**
+This is to compare with the Finance report that report the numbers by accounting period.
+
+OLI | Ticket | TXN_Date | TXN type | TXN Line Number | TXN Currency | TXN Amount
+
+
+##need Total Payment
+Total Bill??
+
+```{r TXN Detail}
+
+
+# retrieve billing transactions
+Claim_TTXN <- Claim %>%
+             select (OLIID, TicketNumber, CaseNumber,
+                     Test, OLIDOS,
+                     TXNDate, TXNAcctPeriod, TXNLineNumber, TXNType,
+                     TXNCurrency, TXNAmount)
+setnames(Claim_TTXN, 'OLIDOS','TestDeliveredDate')
+
+# retrieve payment transactions
+Pymnt_TTXN <- Pymnt %>%
+             dplyr::filter(TXNType %in% c('RI','RP')) %>%
+             select(OLIID, TicketNumber,CaseNumber,
+                    Test, OLIDOS,
+                    TXNDate, TXNAcctPeriod, TXNLineNumber, TXNType,
+                    TXNCurrency, TXNAmount)
+setnames(Pymnt_TTXN, 'OLIDOS','TestDeliveredDate')
+
+
+# retrieve adjustment transactions
+Adjustment_TTXN <- Pymnt %>%
+                  dplyr::filter(TXNType %in% c('AC','AD')) %>%
+                  select(OLIID, TicketNumber,CaseNumber,
+                    Test, OLIDOS,
+                    TXNDate, TXNAcctPeriod, TXNLineNumber, TXNType,
+                    TXNCurrency, TXNAmount,
+                    QDXAdjustmentCode, Description, GHIAdjustmentCode, CategoryDesc, AdjustmentGroup)
+setnames(Adjustment_TTXN, 'OLIDOS','TestDeliveredDate')
+
+# retrieve revenue transactions
+                
+Revenue_TTXN <- data.table::melt(Revenue[,c(grp_var,'AccountingPeriod','AccountingPeriodDate',
+                              'Currency',
+                              'TotalRevenue', 'TotalCashRevenue','TotalAccrualRevenue',
+                              'TotalUSDRevenue','TotalUSDCashRevenue','TotalUSDAccrualRevenue')]
+                   , id=c(grp_var, 'AccountingPeriod','AccountingPeriodDate','Currency'), na.rm=TRUE)
+
+setnames(Revenue_TTXN,
+         c("AccountingPeriod","AccountingPeriodDate","Currency","variable","value"),
+         c("TXNAcctPeriod","TXNDate","TXNCurrency","TXNType","TXNAmount"))
+
+Revenue_TTXN$TXNLineNumber <- 0
+Revenue_TTXN <- left_join(Revenue_TTXN, OLI_info[,c('OLIID','Test','TestDeliveredDate')])
+
+ClaimTicket_TXN <-
+list(Claim_TTXN
+     ,Pymnt_TTXN
+     ,Adjustment_TTXN
+     ,Revenue_TTXN
+    ) %>%
+    Reduce(function(dtf1,dtf2) bind_rows(dtf1,dtf2), .)
+
+ClaimTicket_TXN <- ClaimTicket_TXN %>%
+                    dplyr::filter(TXNAmount != 0.0) %>%
+                    #dplyr::filter(TestDeliveredDate >= '2017-06-01' & TestDeliveredDate <= '2017-07-31')%>%
+                    arrange(OLIID, TicketNumber,desc(TXNLineNumber))
+
+
+
+
+target = 'ClaimTicket_TXN.txt'
+write.table(ClaimTicket_TXN, file = paste(output_folder,target,sep=""), sep="|", row.names=FALSE, col.names=TRUE, na="")
+
+
+#rm(list = ls()[grep("*_TTXN*", ls())])
+
+```
+

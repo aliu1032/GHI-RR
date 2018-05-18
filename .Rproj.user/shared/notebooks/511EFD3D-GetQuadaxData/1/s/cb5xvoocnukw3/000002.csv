@@ -1,3 +1,0 @@
-"0","# Translate QDX test code to GHI"
-"0","QDX_GHI_Test_Code <- data.table(QDX_Code = c('GL','GLD','GLC','MMR','GLP','LIQSEL','UNK'),"
-"0","                                GHI_Code = c('IBC','DCIS','Colon','MMR','Prostate','LIQSEL','Unknown'))"

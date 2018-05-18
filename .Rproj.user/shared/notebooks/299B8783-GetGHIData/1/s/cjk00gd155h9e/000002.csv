@@ -1,8 +1,0 @@
-"0","output <- sqlQuery(con, sql, stringsAsFactors = FALSE)
-"
-"2","Warning:"
-"2"," closing unused RODBC handle 2
-"
-"2","Warning:"
-"2"," closing unused RODBC handle 1
-"

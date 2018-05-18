@@ -1,3 +1,0 @@
-"0","output2 <- read.table(paste(folder,'EDWStage_StagingDB_OrderLineDetail_SQL2.txt',sep=""""), sep=""|"", header=TRUE, stringsAsFactors = FALSE, fill=TRUE)
-"
-"2","EOF within quoted string"

@@ -1,5 +1,0 @@
-"0","OLIDetail <- getOLIDetail('Claim2Rev', DB_source_data, refresh)
-"
-"2","Error in `$<-.data.frame`(`*tmp*`, ""TestDeliveredDate"", value = numeric(0)) : 
-  replacement has 0 rows, data has 473141
-"

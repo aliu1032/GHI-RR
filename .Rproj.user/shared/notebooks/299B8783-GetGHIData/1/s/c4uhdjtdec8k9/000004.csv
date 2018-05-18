@@ -1,9 +1,0 @@
-"0","con <-odbcDriverConnect(connection = ""Driver={ODBC Driver 13 for SQL Server};trusted_connection=yes;
-                       server=EDWStage;
-                       database=EDWDB"")
-        sql <- paste(trimws(readr::read_lines(paste(sql_folder, ""SFDC_Plan_Master.sql"",sep=""""))), collapse=""\n"")
-        output <- sqlQuery(con, sql, stringsAsFactors = FALSE)
-        write.table(output,paste(folder,target,sep=""""), sep=""|"",row.names=FALSE)
-"
-"2","Error in paste(folder, target, sep = """") : object 'folder' not found
-"

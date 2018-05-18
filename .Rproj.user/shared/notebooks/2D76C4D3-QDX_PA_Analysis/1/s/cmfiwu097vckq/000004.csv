@@ -1,9 +1,0 @@
-"0","QDX_PA <- getQDXPA(folder,0)
-Cases <- getQDXCases('QDXClaim_CaseStatus', folder, 0)
-"
-"1","[1]"
-"1"," ""stdCases : reading Claim Cases status data  2018-01-16 12:32:33"""
-"1","
-"
-"0","#OLI_detail"
-"0","OLIDetail <- getOLIDetail('Claim2Rev', folder, 0)"

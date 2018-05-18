@@ -1,5 +1,0 @@
-"0","PTC <- getPTC(DB_source_data, 0)
-"
-"2","cannot open file 'C:/Users/aliu/Box Sync/aliu Cloud Drive/Analytics/Payor Analytics/RTest/PayorTestCriteria.txt': No such file or directory"
-"2","Error in file(file, ""rt"") : cannot open the connection
-"

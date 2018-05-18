@@ -1,5 +1,0 @@
-"0","    QDX_PA <- read.csv(file.path(QDX_zip_path, 'priorAuth.txt', sep=""""), header=T, sep=""|"", stringsAsFactors = F)
-"
-"2","Error in file.path(QDX_zip_path, ""priorAuth.txt"", sep = """") : 
-  object 'QDX_zip_path' not found
-"

@@ -1,4 +1,0 @@
-"0","OLIDetail2 <- getOLIDetail('Claim2Rev', DB_source_data, refresh)
-"
-"2","is.na() applied to non-(list or vector) of type 'NULL'"
-"2","is.na() applied to non-(list or vector) of type 'NULL'"
